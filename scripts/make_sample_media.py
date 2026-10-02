@@ -1,8 +1,9 @@
 """Generate synthetic geotagged travel media for pipeline testing.
 
-Creates ~17 JPEGs in ``data/sample/`` simulating an Iceland south-coast
-road trip: a photo burst at a viewpoint, a 45-minute stop at Vík, and one
-file with no GPS data (to exercise the graceful-skip path).
+Creates ~18 JPEGs in ``data/sample/`` simulating an Iceland south-coast
+road trip: a London outlier photo (exercises the outlier filter), a photo
+burst at a viewpoint, a 45-minute stop at Vík, and one file with no GPS
+data (to exercise the graceful-skip path).
 
 Run from the repo root:  uv run --with piexif python scripts/make_sample_media.py
 """
@@ -21,6 +22,8 @@ T0 = datetime(2026, 8, 14, 8, 0, 0)
 
 # (offset_minutes, latitude, longitude, label)
 PLAN = [
+    # photo from another country the day before — an outlier to be filtered
+    (-60, 51.5074, -0.1278, "london-outlier"),
     # burst at Seljalandsfoss viewpoint (4 rapid shots)
     (0, 63.6158, -19.9888, "seljalandsfoss-1"),
     (1, 63.6159, -19.9887, "seljalandsfoss-2"),

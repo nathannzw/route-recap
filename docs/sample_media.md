@@ -5,6 +5,8 @@
 
 - **4-shot burst** at a viewpoint (~same spot, seconds apart) → exercises
   deduplication into a single waypoint.
+- **1 photo from London taken an hour earlier** → exercises the outlier
+  filter (flight-speed timeline jump).
 - **10–20 minute spaced photos** while "driving" → transient waypoints.
 - **3 photos + 45-minute pause** at Vík → exercises stop detection.
 - **1 file without GPS** → exercises the graceful-skip path.

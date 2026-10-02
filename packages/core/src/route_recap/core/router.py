@@ -50,13 +50,16 @@ class RoutingError(Exception):
 class RoutingProvider(Protocol):
     name: str
 
-    def compute_route(self, waypoints: Sequence[Waypoint]) -> list[RouteSegment]: ...
+    def compute_route(self, waypoints: Sequence[Waypoint]) -> RouteResult: ...
 
 
 @dataclass
 class RouteResult:
     provider: str
     segments: list[RouteSegment] = field(default_factory=list)
+    #: Indices (into the input waypoint list) that were too far from any
+    #: road to route — they are kept as separate off-road POIs instead.
+    off_road_indices: list[int] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ google
@@ -80,18 +83,69 @@ class GoogleRoutesProvider:
         if self._owns_client:
             self._client.close()
 
-    def compute_route(self, waypoints: Sequence[Waypoint]) -> list[RouteSegment]:
-        if len(waypoints) < 2:
-            return []
-        snapped = self._snap_to_roads(waypoints)
-        if not snapped:
-            snapped = list(waypoints)  # snap failed — route the raw points
-        return self._compute_routes(snapped)
+    def compute_route(self, waypoints: Sequence[Waypoint]) -> RouteResult:
+        """Route only the on-road waypoints; report off-road ones separately.
 
-    def _snap_to_roads(self, waypoints: Sequence[Waypoint]) -> list[Waypoint]:
-        batches = _chunks(waypoints, _GOOGLE_SNAP_BATCH)
-        found: list[tuple[int, float, float]] = []
-        for batch in batches:
+        Road trips are driven on roads: waypoints that Snap to Roads can't
+        place (viewpoints, trailheads, parking lots further than ~300 m from
+        a road) are *not* forced through computeRoutes — forcing them in
+        makes Google return no route at all. They are excluded from the
+        route and returned via ``off_road_indices`` so the caller can keep
+        them as standalone POIs.
+        """
+        if len(waypoints) < 2:
+            return RouteResult(provider=self.name)
+
+        snap_map = self.snap_to_roads(waypoints)
+        if len(snap_map) < 2:
+            raise RoutingError(
+                "Google Snap to Roads placed fewer than 2 waypoints on roads"
+            )
+
+        on_road: list[tuple[int, Waypoint]] = []
+        for i in sorted(snap_map):
+            lat, lon = snap_map[i]
+            base = waypoints[i]
+            on_road.append(
+                (
+                    i,
+                    base.model_copy(update={"latitude": lat, "longitude": lon}),
+                )
+            )
+        # Several photos can snap to the same road point — drop exact
+        # consecutive duplicates so computeRoutes isn't fed zero-length legs.
+        index_map: list[int] = []
+        routed: list[Waypoint] = []
+        for i, w in on_road:
+            if (
+                routed
+                and routed[-1].latitude == w.latitude
+                and routed[-1].longitude == w.longitude
+            ):
+                continue
+            index_map.append(i)
+            routed.append(w)
+
+        segments = self._compute_routes(routed, index_map)
+        off_road = [i for i in range(len(waypoints)) if i not in snap_map]
+        return RouteResult(
+            provider=self.name,
+            segments=segments,
+            off_road_indices=off_road,
+        )
+
+    def snap_to_roads(
+        self, waypoints: Sequence[Waypoint]
+    ) -> dict[int, tuple[float, float]]:
+        """Snap waypoints to the road network.
+
+        Returns ``{original_index: (latitude, longitude)}`` for every point
+        within snapping range. Points further than ~300 m from any road are
+        silently dropped by the API and simply absent from the result.
+        """
+        snapped: dict[int, tuple[float, float]] = {}
+        offset = 0
+        for batch in _chunks(list(waypoints), _GOOGLE_SNAP_BATCH):
             path = "|".join(f"{w.latitude:.6f},{w.longitude:.6f}" for w in batch)
             try:
                 resp = self._client.get(
@@ -111,42 +165,40 @@ class GoogleRoutesProvider:
                     or "longitude" not in loc
                 ):
                     continue
-                found.append(
-                    (int(idx), float(loc["latitude"]), float(loc["longitude"]))
+                snapped[offset + int(idx)] = (
+                    float(loc["latitude"]),
+                    float(loc["longitude"]),
                 )
-        if not found:
-            return []
-        found.sort(key=lambda t: t[0])
-        snapped: list[Waypoint] = []
-        for idx, lat, lon in found:
-            if (
-                snapped
-                and snapped[-1].latitude == lat
-                and snapped[-1].longitude == lon
-            ):
-                continue  # several photos can snap to the same road point
-            base = waypoints[idx]
-            snapped.append(
-                base.model_copy(update={"latitude": lat, "longitude": lon})
-            )
+            offset += len(batch)
         return snapped
 
     def _compute_routes(
-        self, waypoints: Sequence[Waypoint]
+        self,
+        waypoints: Sequence[Waypoint],
+        index_map: Sequence[int],
     ) -> list[RouteSegment]:
         segments: list[RouteSegment] = []
         i = 0
         n = len(waypoints)
         while i < n - 1:
-            chunk = waypoints[i : i + _GOOGLE_ROUTE_WAYPOINTS]
-            segment = self._route_chunk(chunk, start_offset=i)
+            j = min(i + _GOOGLE_ROUTE_WAYPOINTS, n)
+            chunk = waypoints[i:j]
+            segment = self._route_chunk(
+                chunk,
+                start_index=index_map[i],
+                end_index=index_map[j - 1],
+            )
             if segment:
                 segments.append(segment)
-            i += len(chunk) - 1  # next chunk reuses the shared endpoint
+            i = j - 1  # next chunk reuses the shared endpoint
         return segments
 
     def _route_chunk(
-        self, chunk: Sequence[Waypoint], *, start_offset: int
+        self,
+        chunk: Sequence[Waypoint],
+        *,
+        start_index: int,
+        end_index: int,
     ) -> RouteSegment | None:
         def loc(w: Waypoint) -> dict:
             return {
@@ -192,8 +244,8 @@ class GoogleRoutesProvider:
         if not encoded:
             raise RoutingError("Google computeRoutes returned an empty polyline")
         return RouteSegment(
-            start_index=start_offset,
-            end_index=start_offset + len(chunk) - 1,
+            start_index=start_index,
+            end_index=end_index,
             encoded_polyline=encoded,
             distance_m=float(route.get("distanceMeters", 0.0)),
             duration_s=_parse_google_duration(route.get("duration")),
@@ -233,9 +285,9 @@ class OSRMProvider:
         if self._owns_client:
             self._client.close()
 
-    def compute_route(self, waypoints: Sequence[Waypoint]) -> list[RouteSegment]:
+    def compute_route(self, waypoints: Sequence[Waypoint]) -> RouteResult:
         if len(waypoints) < 2:
-            return []
+            return RouteResult(provider=self.name)
         segments: list[RouteSegment] = []
         i, n = 0, len(waypoints)
         while i < n - 1:
@@ -273,7 +325,7 @@ class OSRMProvider:
                 )
             )
             i += len(chunk) - 1
-        return segments
+        return RouteResult(provider=self.name, segments=segments)
 
 
 # -------------------------------------------------------------- orchestration
@@ -306,9 +358,9 @@ def compute_route(
     if key:
         google = GoogleRoutesProvider(key, client=client)
         try:
-            segments = google.compute_route(waypoints)
-            if segments:
-                return RouteResult(provider=google.name, segments=segments)
+            result = google.compute_route(waypoints)
+            if result.segments:
+                return result
             errors.append("Google returned no route segments")
         except (RoutingError, httpx.HTTPError) as exc:
             logger.warning("Google routing failed; falling back to OSRM: %s", exc)
@@ -316,9 +368,9 @@ def compute_route(
 
     osrm = OSRMProvider(base, client=client)
     try:
-        segments = osrm.compute_route(waypoints)
-        if segments:
-            return RouteResult(provider=osrm.name, segments=segments)
+        result = osrm.compute_route(waypoints)
+        if result.segments:
+            return result
         errors.append("OSRM returned no route segments")
     except (RoutingError, httpx.HTTPError) as exc:
         errors.append(f"OSRM routing failed: {exc}")

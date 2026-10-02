@@ -58,8 +58,18 @@ def _provider_note(summary: TripSummary) -> str:
     return f"routing: {summary.routing_provider or 'none'}"
 
 
-def build_html(summary: TripSummary, output_dir: str | Path) -> Path:
-    """Render ``index.html`` + ``summary.json`` for a trip and return the path."""
+def build_html(
+    summary: TripSummary,
+    output_dir: str | Path,
+    *,
+    carto_key: str | None = None,
+) -> Path:
+    """Render ``index.html`` + ``summary.json`` for a trip and return the path.
+
+    ``carto_key`` enables CARTO Voyager basemap tiles in the report (the key
+    is embedded in the HTML — it is a browser-side token by design). When
+    omitted, the report falls back to keyless OpenStreetMap tiles.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,12 +83,14 @@ def build_html(summary: TripSummary, output_dir: str | Path) -> Path:
     context = {
         "trip_name": summary.trip_name,
         "trip_json": _json_for_script(trip_data),
+        "carto_key": carto_key,
         "date_range": _fmt_date_range(summary),
         "generated_at": datetime.now().strftime("%d %b %Y, %H:%M"),
         "distance_display": summary.display_distance(),
         "driving_display": _fmt_duration(summary.driving_duration_s),
         "stop_duration_display": _fmt_duration(summary.stop_duration_s),
         "stop_count": summary.stop_count,
+        "off_road_count": summary.off_road_count,
         "media_count": f"{summary.media_processed:,}",
         "provider_note": _provider_note(summary),
     }

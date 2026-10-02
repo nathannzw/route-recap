@@ -11,16 +11,135 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
 
 1. **Extracts** GPS coordinates and capture timestamps from every file
    (ExifTool first, Pillow + `pillow-heif` as an image fallback).
-2. **Deduplicates** photo bursts (same viewpoint within ~50 m / 5 min) into
+2. **Filters outliers** — photo dumps usually contain noise: home, airport,
+   or even foreign-country photos. Waypoints that imply flight-speed jumps
+   in the timeline are split off and the largest continuous segment is kept
+   as the trip (opt out with `--no-filter-outliers`).
+3. **Deduplicates** photo bursts (same viewpoint within ~50 m / 5 min) into
    single waypoints.
-3. **Detects stops** — places where you paused long enough to matter
+4. **Detects stops** — places where you paused long enough to matter
    (default 30 min, or 6 h for overnight stays) — and reverse-geocodes them
    into named landmarks.
-4. **Reconstructs the driven route** snapped to real roads using Google
+5. **Reconstructs the driven route** snapped to real roads using Google
    (Snap to Roads + Routes API) with automatic OSRM fallback when no API key
-   is configured.
-5. **Renders a single, self-contained `index.html`** — Leaflet map with the
-   route polyline, numbered stop pins with popups, and a summary stats banner.
+   is configured. Waypoints too far from any road (viewpoints, trailheads,
+   parking lots) are kept as **separate off-road POIs** on the map rather
+   than forced into the route.
+6. **Builds a static report** — one `index.html` with the trip data embedded,
+   a Leaflet map with the route, numbered stop pins and off-road POIs, plus a
+   `summary.json` sidecar. Leaflet and the basemap tiles load from the network
+   when you open the report.
+
+## 🔄 How a trip becomes a map
+
+Run the CLI once; it coordinates local media processing, optional map APIs,
+and report generation. This flowchart shows the full path, including provider
+fallbacks:
+
+```mermaid
+flowchart TD
+   subgraph input["1 · Select and extract"]
+      media["Trip media folder<br/>HEIC · HEIF · JPEG · MOV · MP4"]
+      cli["CLI configuration<br/>trip name · folder · units · stop threshold"]
+      extract["MediaExtractor<br/>ExifTool; Pillow + pillow-heif image fallback"]
+      hasGps{"GPS coordinates found?"}
+      skipped["Skip from map<br/>file remains in scanned-file count"]
+      gps["GPS coordinates + capture time"]
+      media --> cli --> extract --> hasGps
+      hasGps -->|No| skipped
+      hasGps -->|Yes| gps
+   end
+
+   subgraph core["2 · Prepare the trip"]
+        filter["Filter outliers<br/>drop flight-speed timeline jumps<br/>(home / airport / foreign photos)"]
+        cluster["Sort by capture time<br/>dedupe photo bursts · detect stops"]
+        filter --> cluster
+    end
+    gps --> filter
+   subgraph routing["3 · Reconstruct the road route"]
+      googleKey{"Google Maps key configured?"}
+      snap["Roads API<br/>Snap to Roads"]
+      snapOk{"At least 2 waypoints snapped?"}
+      routes["Routes API<br/>route snapped on-road points"]
+      routeOk{"Google route succeeded?"}
+      googleRoute["Google road route<br/>polyline · distance · driving time"]
+      offroad["Unsnapped waypoints<br/>separate off-road POIs"]
+      osrm["OSRM fallback<br/>uses original waypoint coordinates"]
+      osrmRoute["OSRM route<br/>or no route line if routing fails"]
+      routeData["Available route segments + metrics"]
+
+      googleKey -->|Yes| snap --> snapOk
+      snapOk -->|Yes| routes --> routeOk
+      routeOk -->|Yes| googleRoute
+      routeOk -->|Yes| offroad
+      routeOk -->|No| osrm
+      snapOk -->|No / error| osrm
+      googleKey -->|No| osrm
+      osrm --> osrmRoute
+      googleRoute --> routeData
+      osrmRoute --> routeData
+   end
+   cluster --> googleKey
+
+   subgraph report["4 · Name stops and generate the report"]
+      geocodeChoice{"Stops found and geocoding enabled?"}
+      geocode["Google Geocoding<br/>Nominatim fallback"]
+      coordinates["Keep stop coordinates"]
+      summary["TripSummary<br/>distance · drive/stop time · media · stops"]
+      builder["Jinja2 HTML generator<br/>embeds trip data in the page"]
+      files["output/<trip>/index.html<br/>and summary.json"]
+
+      geocodeChoice -->|Yes| geocode
+      geocodeChoice -->|No| coordinates
+      geocode --> summary
+      coordinates --> summary
+      summary --> builder --> files
+   end
+   cluster --> geocodeChoice
+   routeData --> summary
+   offroad --> summary
+
+   subgraph browser["5 · View the trip"]
+      open["Open the HTML report"]
+      leaflet["Leaflet map<br/>library loaded from CDN"]
+      tileChoice{"CARTO key configured?"}
+      carto["CARTO Voyager tiles"]
+      osm["OpenStreetMap tile fallback"]
+      open --> leaflet --> tileChoice
+      tileChoice -->|Yes| carto
+      tileChoice -->|No| osm
+   end
+   files --> open
+
+   classDef local fill:#eaf2ff,stroke:#3973b9,color:#10243e
+   classDef decision fill:#fff4dc,stroke:#c78218,color:#3e2d00
+   classDef external fill:#f1eaff,stroke:#8062ad,color:#25143d
+   classDef output fill:#e8f7ee,stroke:#39875a,color:#13321f
+    class media,cli,extract,gps,filter,cluster,summary,builder local
+   class hasGps,googleKey,snapOk,routeOk,geocodeChoice,tileChoice decision
+   class snap,routes,geocode,osrm,carto,osm,leaflet external
+   class skipped,offroad,googleRoute,osrmRoute,routeData,coordinates,files,open output
+```
+
+### What each package does
+
+| Package | Responsibility |
+|---|---|
+| `packages/cli` | Collects trip settings, runs the pipeline, shows progress and opens the report. |
+| `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes and reverse-geocodes. |
+| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json`. |
+
+**Routing detail:** when Google routing succeeds, only road-snapped waypoints
+form the road route; points Google cannot snap are preserved as separate
+off-road POIs. If the Google key is absent or the Google route fails, OSRM is
+used as a fallback; OSRM does not classify off-road points. If routing is
+unavailable, the report can still be generated without a route line.
+
+**Keys and network:** `GOOGLE_MAPS_API_KEY` is used by the local pipeline and
+is not put in the HTML. `CARTO_BASEMAP_KEY` is embedded in the report because
+the browser needs it to request CARTO tiles; without it, the report uses
+OpenStreetMap tiles. Trip data is embedded, but the map library and tile images
+are remote, so opening the interactive map requires an internet connection.
 
 ```
 route-recap/
@@ -71,33 +190,38 @@ uv run route-recap
 # Non-interactive: all defaults except the input folder
 uv run route-recap --input-dir "C:\Photos\iceland-2026" --name "Iceland Ring Road 2026" --unit km
 
+# Keep waypoints from a different trip (home/airport/foreign photos)
+uv run route-recap --no-filter-outliers
+
 # See all options
 uv run route-recap --help
 ```
 
 Output lands in `output/<trip-name>/index.html` (plus a `summary.json`
-sidecar). Open it in any browser — the map data is embedded, so the file
-works offline except for the Leaflet CDN.
+sidecar). Open the HTML in a browser; no app server is needed. The trip data
+is embedded, while Leaflet and map tiles are fetched online.
 
 ## ⚙️ Configuration (`.env`)
 
 | Variable               | Purpose                                                            |
 | ---------------------- | ------------------------------------------------------------------ |
 | `GOOGLE_MAPS_API_KEY`  | Enables Google routing + geocoding (primary provider)              |
+| `CARTO_BASEMAP_KEY`    | CARTO Voyager basemap tiles in the HTML report (falls back to OSM) |
 | `NOMINATIM_USER_AGENT` | User-Agent for OSM Nominatim geocoding fallback                    |
 | `EXIFTOOL_PATH`        | Explicit path to `exiftool.exe` when it isn't on `PATH`            |
 | `OSRM_BASE_URL`        | OSRM server used as the routing fallback                           |
 
-**Provider fallback:** with a Google key, waypoints are snapped to roads
-(Snap to Roads), routed (Routes API), and stops reverse-geocoded (Google
-Geocoding). Without a key, routing falls back to the public OSRM demo server
-and geocoding to Nominatim — great for development, rate-limited for serious use.
+**Provider fallback:** with a Google key, on-road waypoints are snapped and
+routed with Google Roads and Routes APIs; stop names use Google Geocoding.
+Unsnapped waypoints become separate POIs. Without a key, routing uses the
+public OSRM demo server and stop naming uses Nominatim. Both public fallbacks
+are rate-limited; OSRM does not identify off-road POIs.
 
 ## 🧪 Development
 
 ```powershell
 uv run pytest          # unit tests for models, clustering, router
-uv run python scripts/make_sample_media.py   # synthetic geotagged fixtures in data/sample/
+uv run --with piexif python scripts/make_sample_media.py   # synthetic fixtures in data/sample/
 ```
 
 ## 🔮 Roadmap

@@ -79,6 +79,9 @@ class Waypoint(BaseModel):
     source_files: list[Path] = Field(default_factory=list)
     is_stop: bool = False
     stop_index: int | None = None  # index into TripSummary.stops when is_stop
+    #: True when the point was too far from any road to be part of the
+    #: route (e.g. viewpoints, trailheads) — rendered as a separate POI.
+    off_road: bool = False
 
     @field_validator("latitude")
     @classmethod
@@ -140,6 +143,11 @@ class TripConfig(BaseModel):
     stop_max_distance_m: float = Field(default=500.0, ge=0)
     overnight_hours: int = Field(default=6, ge=2)
     geocode_stops: bool = True
+    #: Drop waypoints that look like a different trip (home/airport/foreign
+    #: photos) — timeline jumps at flight-like speeds.
+    filter_outliers: bool = True
+    outlier_gap_minutes: int = Field(default=30, ge=1)
+    outlier_speed_kmh: float = Field(default=180.0, ge=20)
 
 
 class TripSummary(BaseModel):
@@ -154,6 +162,7 @@ class TripSummary(BaseModel):
     stop_duration_s: float = Field(default=0.0, ge=0)
     media_processed: int = Field(default=0, ge=0)
     media_with_gps: int = Field(default=0, ge=0)
+    media_excluded: int = Field(default=0, ge=0)
     waypoint_count: int = Field(default=0, ge=0)
     stop_count: int = Field(default=0, ge=0)
     routing_provider: str | None = None
@@ -164,6 +173,10 @@ class TripSummary(BaseModel):
     @property
     def distance_mi(self) -> float:
         return self.distance_km / KM_PER_MILE
+
+    @property
+    def off_road_count(self) -> int:
+        return sum(1 for w in self.waypoints if w.off_road)
 
     def display_distance(self) -> str:
         if self.unit is DistanceUnit.MI:

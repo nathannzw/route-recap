@@ -82,18 +82,72 @@ def test_google_chunks_route_requests():
 
     provider = GoogleRoutesProvider("test-key", client=make_client(handler))
     try:
-        segments = provider.compute_route(points)
+        result = provider.compute_route(points)
     finally:
         provider.close()
 
     assert calls["snap"] == 1
     assert calls["routes"] == 2  # 30 points → chunks of 25 and 6
+    segments = result.segments
     assert [(s.start_index, s.end_index) for s in segments] == [
         (0, 24),
         (24, 29),
     ]
     assert segments[0].distance_m == 25000.0
     assert segments[0].duration_s == 600.0
+    assert result.off_road_indices == []  # every point snapped
+
+
+def test_google_offroad_points_excluded_from_route():
+    """Points far from a road are routed around, not through."""
+    points = [wp(0), wp(1), wp(2)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "snapToRoads" in str(request.url):
+            # Snap only the first and last points; middle one is dropped.
+            return httpx.Response(
+                200,
+                json={
+                    "snappedPoints": [
+                        {
+                            "location": {"latitude": 63.4005, "longitude": -19.0005},
+                            "originalIndex": 0,
+                        },
+                        {
+                            "location": {"latitude": 63.4025, "longitude": -18.9985},
+                            "originalIndex": 2,
+                        },
+                    ]
+                },
+            )
+        body = json.loads(request.content)
+        n = 1 + len(body.get("intermediates", [])) + 1
+        return httpx.Response(
+            200,
+            json={
+                "routes": [
+                    {
+                        "distanceMeters": n * 1000,
+                        "duration": "600s",
+                        "polyline": {"encodedPolyline": polyline.encode(
+                            [(63.4 + j * 0.001, -19.0 + j * 0.001) for j in range(n)]
+                        )},
+                    }
+                ]
+            },
+        )
+
+    provider = GoogleRoutesProvider("test-key", client=make_client(handler))
+    try:
+        result = provider.compute_route(points)
+    finally:
+        provider.close()
+
+    # The off-road middle point is excluded from the route but reported.
+    assert result.off_road_indices == [1]
+    assert len(result.segments) == 1
+    assert (result.segments[0].start_index, result.segments[0].end_index) == (0, 2)
+    assert result.segments[0].distance_m == 2000.0  # routed 0 → 2 directly
 
 
 def test_google_routes_api_error_raises():
@@ -125,8 +179,10 @@ def test_osrm_geometry_to_polyline_roundtrip():
         )
 
     provider = OSRMProvider(client=make_client(handler))
-    segments = provider.compute_route([wp(0), wp(1)])
+    result = provider.compute_route([wp(0), wp(1)])
+    segments = result.segments
     assert len(segments) == 1
+    assert result.off_road_indices == []  # OSRM cannot classify
     assert segments[0].distance_m == 1234.5
     assert segments[0].duration_s == 300.0
     decoded = polyline.decode(segments[0].encoded_polyline)

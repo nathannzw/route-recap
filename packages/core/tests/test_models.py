@@ -40,6 +40,23 @@ def test_trip_summary_distance_conversion():
     assert summary.display_distance() == "10.0 mi"
 
 
+def test_waypoint_off_road_flag_defaults_false():
+    w = Waypoint(latitude=63.4, longitude=-19.0)
+    assert w.off_road is False
+
+
+def test_trip_summary_off_road_count():
+    summary = TripSummary(
+        trip_name="t",
+        waypoints=[
+            Waypoint(latitude=1.0, longitude=2.0, off_road=True),
+            Waypoint(latitude=1.1, longitude=2.1),
+            Waypoint(latitude=1.2, longitude=2.2, off_road=True),
+        ],
+    )
+    assert summary.off_road_count == 2
+
+
 def test_trip_config_defaults():
     cfg = TripConfig(trip_name="Trip")
     assert cfg.min_stop_minutes == 30

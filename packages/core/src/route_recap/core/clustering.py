@@ -1,10 +1,13 @@
 """Spatial/temporal clustering for route-recap.
 
-Two operations:
-1. **Deduplication** — collapse photo bursts (same viewpoint within a small
+Three operations:
+1. **Outlier filtering** — drop waypoints from a different trip than the
+   main one (home/airport/foreign photos) by detecting flight-speed jumps
+   in the chronological timeline.
+2. **Deduplication** — collapse photo bursts (same viewpoint within a small
    radius and time window) into single representative waypoints to avoid
    routing-API bloat.
-2. **Stop detection** — identify significant pauses as "stops/landmarks"
+3. **Stop detection** — identify significant pauses as "stops/landmarks"
    rather than transient road waypoints.
 """
 
@@ -37,6 +40,68 @@ def _time_since(a: datetime | None, b: datetime | None) -> float | None:
     if a is None or b is None:
         return None
     return (b - a).total_seconds()
+
+
+def filter_outliers(
+    waypoints: list[Waypoint],
+    *,
+    gap_minutes: int = 30,
+    speed_kmh: float = 180.0,
+) -> tuple[list[Waypoint], list[Waypoint]]:
+    """Split off waypoints that belong to a different trip.
+
+    Photo dumps often contain noise: photos from home, airports, or a
+    different country taken before/after (or interleaved with) the actual
+    trip. Those appear as **jumps** in the chronological timeline —
+    consecutive waypoints whose implied travel speed is impossible for
+    driving (e.g. a flight). A jump is declared when the time gap is at
+    least ``gap_minutes`` AND the effective speed exceeds ``speed_kmh``.
+
+    Jumps split the timeline into segments; the largest segment (by media
+    count) is kept as the trip and the rest is returned as excluded.
+    Waypoints without timestamps cannot be classified and are always kept.
+
+    Returns ``(kept, excluded)``.
+    """
+    if not waypoints:
+        return [], []
+
+    timed = sorted(
+        (w for w in waypoints if w.timestamp is not None),
+        key=lambda w: w.timestamp,
+    )
+    untimed = [w for w in waypoints if w.timestamp is None]
+    if not timed:
+        return list(untimed), []
+
+    min_gap_s = gap_minutes * 60.0
+    boundaries: list[int] = []
+    for i, (a, b) in enumerate(zip(timed, timed[1:])):
+        gap_s = _time_since(a.timestamp, b.timestamp)
+        if gap_s is None or gap_s < min_gap_s:
+            continue
+        dist = haversine_m(a.latitude, a.longitude, b.latitude, b.longitude)
+        speed = (dist / gap_s) * 3.6  # m/s → km/h
+        if speed > speed_kmh:
+            boundaries.append(i + 1)  # segment starts at timed[i + 1]
+
+    if not boundaries:
+        return list(waypoints), []
+
+    segments: list[list[Waypoint]] = []
+    start = 0
+    for boundary in sorted(set(boundaries)) + [len(timed)]:
+        segments.append(timed[start:boundary])
+        start = boundary
+
+    def weight(segment: list[Waypoint]) -> tuple[int, int]:
+        return (sum(w.media_count for w in segment), len(segment))
+
+    largest = max(segments, key=weight)
+    largest_ids = {id(w) for w in largest}
+    excluded = [w for w in timed if id(w) not in largest_ids]
+    kept = list(largest) + untimed
+    return kept, excluded
 
 
 def deduplicate(

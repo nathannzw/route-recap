@@ -34,6 +34,7 @@ from route_recap.core import (
     compute_route,
     deduplicate,
     detect_stops,
+    filter_outliers,
     reverse_geocode_detail,
 )
 from route_recap.generator import build_html
@@ -85,6 +86,7 @@ def _gather_config(
     unit: DistanceUnit | None,
     min_stop_minutes: int | None,
     no_geocode: bool,
+    no_filter_outliers: bool,
 ) -> TripConfig:
     trip_name = name or _prompt_name()
     folder = input_dir if input_dir is not None else _prompt_input_dir()
@@ -97,6 +99,7 @@ def _gather_config(
         distance_unit=unit,
         min_stop_minutes=mins,
         geocode_stops=geocode,
+        filter_outliers=not no_filter_outliers,
     )
 
 
@@ -145,6 +148,24 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
         for m in gps_items
     ]
 
+    excluded_media = 0
+    if config.filter_outliers:
+        with console.status("Filtering outlier waypoints..."):
+            kept, excluded = filter_outliers(
+                waypoints,
+                gap_minutes=config.outlier_gap_minutes,
+                speed_kmh=config.outlier_speed_kmh,
+            )
+        if excluded:
+            excluded_media = sum(w.media_count for w in excluded)
+            console.print(
+                f"[dim]Excluded {len(excluded)} waypoint(s) "
+                f"({excluded_media} photo(s)) that look like a different trip "
+                f"(home/airport photos or another country). "
+                f"Use --no-filter-outliers to keep them.[/dim]"
+            )
+        waypoints = kept
+
     with console.status("Clustering waypoints..."):
         waypoints = deduplicate(
             waypoints,
@@ -165,6 +186,14 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
             route_result = compute_route(waypoints)
             route_provider = route_result.provider
             segments = route_result.segments
+            for idx in route_result.off_road_indices:
+                if 0 <= idx < len(waypoints):
+                    waypoints[idx].off_road = True
+            if route_result.off_road_indices:
+                console.print(
+                    f"[dim]{len(route_result.off_road_indices)} waypoint(s) too far "
+                    f"from roads — kept as separate POIs.[/dim]"
+                )
         except RoutingError as exc:
             console.print(f"[yellow]Routing failed: {exc}[/yellow]")
             console.print("[yellow]Report will be generated without a route line.[/yellow]")
@@ -194,6 +223,7 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
         stop_duration_s=sum(s.duration_s for s in stops),
         media_processed=result.total_files,
         media_with_gps=result.with_gps,
+        media_excluded=excluded_media,
         waypoint_count=len(waypoints),
         stop_count=len(stops),
         routing_provider=route_provider,
@@ -218,7 +248,10 @@ def _show_summary(summary: TripSummary, output_path: Path) -> None:
     table.add_row("Driving time", f"{summary.driving_duration_s / 3600:.1f} h")
     table.add_row("Stop time", f"{summary.stop_duration_s / 3600:.1f} h")
     table.add_row("Stops", str(summary.stop_count))
+    table.add_row("Off-road points", str(summary.off_road_count))
     table.add_row("Media", f"{summary.media_processed} (GPS: {summary.media_with_gps})")
+    if summary.media_excluded:
+        table.add_row("Excluded outliers", f"{summary.media_excluded} photo(s)")
     table.add_row("Route points", str(summary.waypoint_count))
     table.add_row("Router", summary.routing_provider or "none")
     console.print(Panel(table, title=f"[bold]{summary.trip_name}[/bold]", expand=False))
@@ -248,6 +281,13 @@ def main(
     no_geocode: Annotated[
         bool, typer.Option("--no-geocode", help="Skip reverse geocoding of stops")
     ] = False,
+    no_filter_outliers: Annotated[
+        bool,
+        typer.Option(
+            "--no-filter-outliers",
+            help="Keep waypoints from a different trip (home/airport/foreign photos)",
+        ),
+    ] = False,
     no_open: Annotated[
         bool, typer.Option("--no-open", help="Do not open the report in the browser")
     ] = False,
@@ -259,7 +299,9 @@ def main(
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
 
-    config = _gather_config(name, input_dir, unit, min_stop_minutes, no_geocode)
+    config = _gather_config(
+        name, input_dir, unit, min_stop_minutes, no_geocode, no_filter_outliers
+    )
     console.print(
         Panel.fit(
             f"Input: [bold]{config.input_dir}[/bold]\n"
@@ -273,8 +315,13 @@ def main(
     summary = _run_pipeline(config)
 
     output_dir = Path("output") / _slug(config.trip_name)
-    output_path = build_html(summary, output_dir)
+    carto_key = os.getenv("CARTO_BASEMAP_KEY") or None
+    output_path = build_html(summary, output_dir, carto_key=carto_key)
     _show_summary(summary, output_path)
+    if not carto_key:
+        console.print(
+            "[dim]Tip: set CARTO_BASEMAP_KEY in .env to use CARTO basemap tiles.[/dim]"
+        )
 
     if not no_open and Confirm.ask("Open the report in your browser?", default=True):
         webbrowser.open(output_path.resolve().as_uri())
