@@ -7,6 +7,7 @@ import os
 import re
 import time
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -28,6 +29,7 @@ from route_recap.core import (
     DistanceUnit,
     MediaExtractor,
     RoutingError,
+    Stop,
     TripConfig,
     TripSummary,
     Waypoint,
@@ -104,6 +106,43 @@ def _gather_config(
 
 
 # ------------------------------------------------------------------ pipeline
+
+_GEOCODE_WORKERS = 6  # well under Google Geocoding's default 50 QPS quota
+
+
+def _geocode_apply(stop: Stop, detail: dict | None) -> None:
+    if detail:
+        stop.name = detail["name"]
+        stop.address = detail["address"]
+
+
+def _geocode_stops_sequential(stops: list[Stop]) -> None:
+    """Nominatim fallback — its usage policy allows ~1 request per second."""
+    for i, stop in enumerate(stops):
+        try:
+            if i > 0:
+                time.sleep(1.1)
+            _geocode_apply(stop, reverse_geocode_detail(stop.latitude, stop.longitude))
+        except Exception:
+            logger.exception("geocoding failed for stop %d", i)
+
+
+def _geocode_stops_parallel(stops: list[Stop]) -> None:
+    """Google geocoding — parallelize so hundreds of stops finish in seconds."""
+
+    def work(item: tuple[int, Stop]) -> tuple[int, dict | None]:
+        i, stop = item
+        try:
+            return i, reverse_geocode_detail(stop.latitude, stop.longitude)
+        except Exception:
+            logger.exception("geocoding failed for stop %d", i)
+            return i, None
+
+    with ThreadPoolExecutor(max_workers=_GEOCODE_WORKERS) as pool:
+        futures = [pool.submit(work, (i, s)) for i, s in enumerate(stops)]
+        for future in as_completed(futures):
+            i, detail = future.result()
+            _geocode_apply(stops[i], detail)
 
 
 def _run_pipeline(config: TripConfig) -> TripSummary:
@@ -201,16 +240,10 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
     if config.geocode_stops and stops:
         uses_nominatim = not os.getenv("GOOGLE_MAPS_API_KEY")
         with console.status("Naming stops..."):
-            for i, stop in enumerate(stops):
-                try:
-                    if uses_nominatim and i > 0:
-                        time.sleep(1.1)  # Nominatim usage policy: ≤ 1 req/s
-                    detail = reverse_geocode_detail(stop.latitude, stop.longitude)
-                    if detail:
-                        stop.name = detail["name"]
-                        stop.address = detail["address"]
-                except Exception:
-                    logger.exception("geocoding failed for stop %d", i)
+            if uses_nominatim:
+                _geocode_stops_sequential(stops)
+            else:
+                _geocode_stops_parallel(stops)
 
     timestamps = [w.timestamp for w in waypoints if w.timestamp is not None]
     summary = TripSummary(

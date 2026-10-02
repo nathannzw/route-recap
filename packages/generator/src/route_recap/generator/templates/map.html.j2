@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ trip_name }} · route-recap</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <style>
     :root {
       --ink: #10243e;
@@ -216,6 +218,7 @@
 
   <script id="trip-data" type="application/json">{{ trip_json | safe }}</script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script>
     (function () {
       var data = JSON.parse(document.getElementById('trip-data').textContent);
@@ -260,6 +263,20 @@
       }).addTo(map);
 {% endif %}
 
+      // Marker clustering keeps the map readable with hundreds of stops;
+      // falls back to plain markers if the plugin cannot load.
+      var clustering = typeof L.markerClusterGroup === 'function';
+      var wayCluster = clustering ? L.markerClusterGroup({ maxClusterRadius: 60 }) : null;
+      var stopCluster = clustering ? L.markerClusterGroup({ maxClusterRadius: 60 }) : null;
+      if (wayCluster) map.addLayer(wayCluster);
+      if (stopCluster) map.addLayer(stopCluster);
+
+      function addMarker(marker, isStop) {
+        var target = isStop ? stopCluster : wayCluster;
+        if (target) target.addLayer(marker); else marker.addTo(map);
+        return marker;
+      }
+
       var bounds = [];
 
       (data.segments || []).forEach(function (seg) {
@@ -277,22 +294,22 @@
           var pop = '<div class="stop-popup"><h3>Off-road spot</h3>';
           if (wp.timestamp) pop += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
           pop += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p></div>';
-          L.circleMarker([wp.latitude, wp.longitude], {
+          addMarker(L.circleMarker([wp.latitude, wp.longitude], {
             radius: 6,
             color: '#a16207',
             fillColor: '#fbbf24',
             fillOpacity: 0.95,
             weight: 2
-          }).addTo(map).bindPopup(pop);
+          }).bindPopup(pop), false);
           return;
         }
-        L.circleMarker([wp.latitude, wp.longitude], {
+        addMarker(L.circleMarker([wp.latitude, wp.longitude], {
           radius: 4,
           color: '#1a73e8',
           fillColor: '#ffffff',
           fillOpacity: 1,
           weight: 2
-        }).addTo(map);
+        }), false);
       });
 
       (data.stops || []).forEach(function (stop, i) {
@@ -312,7 +329,7 @@
           html += '</p>';
         }
         html += '<p class="count">' + stop.media_count + (stop.media_count === 1 ? ' photo' : ' photos') + '</p></div>';
-        L.marker([stop.latitude, stop.longitude], { icon: icon }).addTo(map).bindPopup(html);
+        addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon }).bindPopup(html), true);
       });
 
       if (bounds.length) {

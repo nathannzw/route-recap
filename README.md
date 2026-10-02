@@ -141,6 +141,13 @@ the browser needs it to request CARTO tiles; without it, the report uses
 OpenStreetMap tiles. Trip data is embedded, but the map library and tile images
 are remote, so opening the interactive map requires an internet connection.
 
+**Scale:** the pipeline is linear and cheap — thousands of media files and
+hundreds of stops are fine. With a Google key, stops reverse-geocode in
+parallel (a few seconds for hundreds of stops); the Nominatim fallback runs
+sequentially at its ~1 request/second policy limit. Stop pins and POI markers
+are marker-clustered on the map, so the report stays readable with hundreds of
+stops.
+
 ```
 route-recap/
 ├── packages/
