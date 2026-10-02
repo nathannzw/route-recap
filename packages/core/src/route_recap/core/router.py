@@ -60,6 +60,10 @@ class RouteResult:
     #: Indices (into the input waypoint list) that were too far from any
     #: road to route — they are kept as separate off-road POIs instead.
     off_road_indices: list[int] = field(default_factory=list)
+    #: Snap-to-Roads result: {original_index: (lat, lon)} for snapped points.
+    #: Used by the hybrid merge so OSRM bridges connect exactly where the
+    #: Google segments end (no disjoints).
+    snap_map: dict[int, tuple[float, float]] = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------ google
@@ -144,6 +148,7 @@ class GoogleRoutesProvider:
             provider=self.name,
             segments=segments,
             off_road_indices=off_road,
+            snap_map=snap_map,
         )
 
     def snap_to_roads(
@@ -397,7 +402,20 @@ def _hybrid_merge(
             isolated.extend(run)
             continue
         try:
-            bridge_wps = [waypoints[i] for i in dedup]
+            # Boundary points (run[0]-1 and run[-1]+1) are snapped by Google —
+            # use their SNAPPED coordinates so the bridge connects exactly
+            # where the Google segments end, keeping the route continuous.
+            bridge_wps: list[Waypoint] = []
+            for i in dedup:
+                if i in google_result.snap_map:
+                    lat, lon = google_result.snap_map[i]
+                    bridge_wps.append(
+                        waypoints[i].model_copy(
+                            update={"latitude": lat, "longitude": lon}
+                        )
+                    )
+                else:
+                    bridge_wps.append(waypoints[i])
             result = osrm.compute_route(bridge_wps)
             offset = dedup[0]
             for seg in result.segments:

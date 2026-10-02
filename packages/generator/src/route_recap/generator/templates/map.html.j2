@@ -289,7 +289,10 @@
     <div class="anim-controls" id="anim-controls" style="display:none">
       <button id="anim-play" title="Play / pause">▶</button>
       <select id="anim-speed" title="Animation speed">
-        <option value="0.25">Slow</option>
+        <option value="0.02">Crawl</option>
+        <option value="0.05">Very Slow</option>
+        <option value="0.1">Slow</option>
+        <option value="0.25">Relaxed</option>
         <option value="1" selected>Normal</option>
         <option value="4">Fast</option>
         <option value="16">Turbo</option>
@@ -506,8 +509,17 @@
             var dur = Math.max(endT - startT, 1);
             var segEnd = startT + dur;
             if (prevPos && startT > prevEnd) {
-              track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
-              track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+              // Gap between segments. If the next segment starts at a
+              // different position (a disjoint), drive straight across the
+              // gap so the car never teleports; otherwise hold still (stop).
+              var nextStart = coords[0];
+              if (prevPos[0] !== nextStart[0] || prevPos[1] !== nextStart[1]) {
+                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+                track.push({ v: startT, lat: nextStart[0], lon: nextStart[1], km: kmSoFar });
+              } else {
+                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+                track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+              }
             }
             var dists = [], totalD = 0;
             for (var i = 1; i < coords.length; i++) {

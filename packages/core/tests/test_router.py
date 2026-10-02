@@ -246,6 +246,63 @@ def test_hybrid_merge_osrm_failure_keeps_run_off_road():
     assert [(s.start_index, s.end_index) for s in merged] == [(0, 1), (4, 5)]
 
 
+def test_hybrid_merge_uses_snapped_boundary_coords():
+    """Bridge boundaries use Google's SNAPPED coords so the route is seamless."""
+    points = [wp(i) for i in range(6)]
+    google_segments = [
+        RouteSegment(start_index=0, end_index=1, encoded_polyline="a", distance_m=1000, duration_s=60),
+        RouteSegment(start_index=4, end_index=5, encoded_polyline="b", distance_m=1000, duration_s=60),
+    ]
+    # Google snapped indices 0,1,4,5 — boundary points 1 and 4 are snapped.
+    snap_map = {
+        0: (63.4001, -19.0001),
+        1: (63.4011, -18.9991),
+        4: (63.4041, -18.9961),
+        5: (63.4051, -18.9951),
+    }
+    google_result = RouteResult(
+        provider="google",
+        segments=google_segments,
+        off_road_indices=[2, 3],
+        snap_map=snap_map,
+    )
+    seen_coords = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        coords = request.url.path.split("/driving/")[1].split(";")
+        seen_coords["bridge"] = coords
+        pts = [[float(c.split(",")[0]), float(c.split(",")[1])] for c in coords]
+        return httpx.Response(
+            200,
+            json={
+                "code": "Ok",
+                "routes": [
+                    {
+                        "geometry": {"type": "LineString", "coordinates": pts},
+                        "distance": 1000.0 * (len(pts) - 1),
+                        "duration": 100.0 * (len(pts) - 1),
+                    }
+                ],
+            },
+        )
+
+    osrm = OSRMProvider(client=make_client(handler))
+    try:
+        merged, isolated = _hybrid_merge(points, google_result, osrm)
+    finally:
+        osrm.close()
+
+    assert isolated == []
+    # Bridge = [1(snapped), 2, 3, 4(snapped)] — boundaries use snapped coords.
+    assert seen_coords["bridge"] == [
+        "-18.999100,63.401100",  # snapped index 1
+        "-18.998000,63.402000",  # raw index 2 (wp: -19.0 + 0.002)
+        "-18.997000,63.403000",  # raw index 3 (wp: -19.0 + 0.003)
+        "-18.996100,63.404100",  # snapped index 4
+    ]
+    assert [(s.start_index, s.end_index) for s in merged] == [(0, 1), (1, 4), (4, 5)]
+
+
 def test_compute_route_hybrid_provider():
     """End-to-end: Google snaps some points, OSRM bridges the rest."""
     points = [wp(i) for i in range(6)]
