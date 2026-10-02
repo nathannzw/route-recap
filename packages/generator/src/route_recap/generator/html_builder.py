@@ -63,12 +63,19 @@ def build_html(
     output_dir: str | Path,
     *,
     carto_key: str | None = None,
+    assets: dict[str, dict] | None = None,
 ) -> Path:
     """Render ``index.html`` + ``summary.json`` for a trip and return the path.
 
     ``carto_key`` enables CARTO Voyager basemap tiles in the report (the key
     is embedded in the HTML — it is a browser-side token by design). When
     omitted, the report falls back to keyless OpenStreetMap tiles.
+
+    ``assets`` maps waypoint source-file paths (as stored in
+    ``Waypoint.source_files``) to ``{"url", "thumb", "kind"}`` entries created
+    by :func:`route_recap.generator.stage_media`; the map is embedded in the
+    report so popups can render photo strips. Media is viewable through
+    ``route-recap serve`` (browsers block file:// images).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,7 +86,7 @@ def build_html(
     )
     template = env.get_template("map.html.j2")
 
-    trip_data = summary.model_dump(mode="json")
+    trip_data = {**summary.model_dump(mode="json"), "assets": assets or {}}
     context = {
         "trip_name": summary.trip_name,
         "trip_json": _json_for_script(trip_data),

@@ -138,6 +138,30 @@
       margin-bottom: 2px;
     }
     .stop-popup .count { font-size: 0.78rem; color: var(--muted); }
+    .photo-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .photo-strip a { display: block; }
+    .photo-strip img {
+      width: 56px;
+      height: 56px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgba(16, 36, 62, 0.25);
+      transition: transform 0.12s ease;
+    }
+    .photo-strip img:hover { transform: scale(1.08); }
+    .photo-strip .vid {
+      width: 56px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--brand-deep);
+      color: #fff;
+      font-size: 1.1rem;
+      border-radius: 6px;
+      text-decoration: none;
+    }
     /* legend */
     .legend {
       position: absolute;
@@ -249,6 +273,23 @@
         var d = new Date(iso);
         return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
+      var assets = data.assets || {};
+      function assetStrip(files, limit) {
+        var html = '';
+        var shown = 0;
+        (files || []).forEach(function (f) {
+          if (limit && shown >= limit) return;
+          var a = assets[f];
+          if (!a) return;
+          if (a.thumb) {
+            html += '<a href="' + esc(a.url) + '" target="_blank"><img src="' + esc(a.thumb) + '" loading="lazy" alt=""></a>';
+          } else if (a.kind === 'video') {
+            html += '<a class="vid" href="' + esc(a.url) + '" target="_blank" title="' + esc(f) + '">▶</a>';
+          }
+          shown++;
+        });
+        return html ? '<div class="photo-strip">' + html + '</div>' : '';
+      }
 
       var map = L.map('map', { scrollWheelZoom: true }).setView([20, 0], 2);
 {% if carto_key %}
@@ -293,7 +334,8 @@
         if (wp.off_road) {
           var pop = '<div class="stop-popup"><h3>Off-road spot</h3>';
           if (wp.timestamp) pop += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
-          pop += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p></div>';
+          pop += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
+          pop += assetStrip(wp.source_files, 4) + '</div>';
           addMarker(L.circleMarker([wp.latitude, wp.longitude], {
             radius: 6,
             color: '#a16207',
@@ -303,13 +345,17 @@
           }).bindPopup(pop), false);
           return;
         }
+        var pop2 = '<div class="stop-popup"><h3>Waypoint</h3>';
+        if (wp.timestamp) pop2 += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
+        pop2 += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
+        pop2 += assetStrip(wp.source_files, 3) + '</div>';
         addMarker(L.circleMarker([wp.latitude, wp.longitude], {
           radius: 4,
           color: '#1a73e8',
           fillColor: '#ffffff',
           fillOpacity: 1,
           weight: 2
-        }), false);
+        }).bindPopup(pop2), false);
       });
 
       (data.stops || []).forEach(function (stop, i) {
@@ -328,7 +374,8 @@
           if (stop.departed_at) html += ' – ' + fmtTime(stop.departed_at);
           html += '</p>';
         }
-        html += '<p class="count">' + stop.media_count + (stop.media_count === 1 ? ' photo' : ' photos') + '</p></div>';
+        html += '<p class="count">' + stop.media_count + (stop.media_count === 1 ? ' photo' : ' photos') + '</p>';
+        html += assetStrip(stop.source_files, 6) + '</div>';
         addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon }).bindPopup(html), true);
       });
 

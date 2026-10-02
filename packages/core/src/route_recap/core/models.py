@@ -105,6 +105,8 @@ class Stop(BaseModel):
     departed_at: datetime | None = None
     duration_s: int = Field(default=0, ge=0)
     media_count: int = Field(default=0, ge=0)
+    #: Media files clustered at this stop (inherited from the anchor waypoint).
+    source_files: list[Path] = Field(default_factory=list)
 
     @field_validator("latitude")
     @classmethod
@@ -148,6 +150,9 @@ class TripConfig(BaseModel):
     filter_outliers: bool = True
     outlier_gap_minutes: int = Field(default=30, ge=1)
     outlier_speed_kmh: float = Field(default=180.0, ge=20)
+    #: Hardlink media into the report folder and generate thumbnails so
+    #: photos can be viewed from the map popups.
+    stage_media: bool = True
 
 
 class TripSummary(BaseModel):

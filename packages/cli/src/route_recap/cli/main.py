@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import functools
+import http.server
 import logging
 import os
 import re
+import socketserver
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,7 +42,7 @@ from route_recap.core import (
     filter_outliers,
     reverse_geocode_detail,
 )
-from route_recap.generator import build_html
+from route_recap.generator import build_html, stage_media
 
 load_dotenv()
 
@@ -47,6 +50,7 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
     pretty_exceptions_show_locals=False,
+    invoke_without_command=True,
     help="Reconstruct a continuous road-trip route from geotagged iPhone media.",
 )
 console = Console()
@@ -89,6 +93,7 @@ def _gather_config(
     min_stop_minutes: int | None,
     no_geocode: bool,
     no_filter_outliers: bool,
+    no_media: bool,
 ) -> TripConfig:
     trip_name = name or _prompt_name()
     folder = input_dir if input_dir is not None else _prompt_input_dir()
@@ -102,6 +107,7 @@ def _gather_config(
         min_stop_minutes=mins,
         geocode_stops=geocode,
         filter_outliers=not no_filter_outliers,
+        stage_media=not no_media,
     )
 
 
@@ -294,8 +300,9 @@ def _show_summary(summary: TripSummary, output_path: Path) -> None:
 # ------------------------------------------------------------------- command
 
 
-@app.command()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     name: Annotated[
         Optional[str], typer.Option("--name", "-n", help="Trip name")
     ] = None,
@@ -321,6 +328,13 @@ def main(
             help="Keep waypoints from a different trip (home/airport/foreign photos)",
         ),
     ] = False,
+    no_media: Annotated[
+        bool,
+        typer.Option(
+            "--no-media",
+            help="Skip staging media/thumbnails into the report folder",
+        ),
+    ] = False,
     no_open: Annotated[
         bool, typer.Option("--no-open", help="Do not open the report in the browser")
     ] = False,
@@ -328,12 +342,19 @@ def main(
         bool, typer.Option("--verbose", "-v", help="Verbose logging")
     ] = False,
 ) -> None:
-    """Reconstruct a road-trip route from geotagged media and render an HTML map."""
+    """Reconstruct a road-trip route from geotagged media and render an HTML map.
+
+    Run bare (no subcommand) to process a trip; use `route-recap serve` to
+    browse reports with photos.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
 
     config = _gather_config(
-        name, input_dir, unit, min_stop_minutes, no_geocode, no_filter_outliers
+        name, input_dir, unit, min_stop_minutes, no_geocode, no_filter_outliers,
+        no_media,
     )
     console.print(
         Panel.fit(
@@ -348,16 +369,93 @@ def main(
     summary = _run_pipeline(config)
 
     output_dir = Path("output") / _slug(config.trip_name)
+
+    assets: dict[str, dict] = {}
+    if config.stage_media:
+        with console.status("Staging media & thumbnails..."):
+            sources: list[Path] = []
+            for w in summary.waypoints:
+                for f in w.source_files:
+                    if f not in sources:
+                        sources.append(f)
+            assets = stage_media(sources, output_dir)
+        if assets:
+            no_thumb = sum(
+                1
+                for a in assets.values()
+                if a["kind"] == "video" and not a["thumb"]
+            )
+            console.print(
+                f"[dim]Staged {len(assets)} media file(s) into "
+                f"{output_dir / 'media'}.[/dim]"
+            )
+            if no_thumb:
+                console.print(
+                    f"[dim]{no_thumb} video(s) have no thumbnail — install "
+                    f"ffmpeg to generate video preview frames.[/dim]"
+                )
+
     carto_key = os.getenv("CARTO_BASEMAP_KEY") or None
-    output_path = build_html(summary, output_dir, carto_key=carto_key)
+    output_path = build_html(summary, output_dir, carto_key=carto_key, assets=assets)
     _show_summary(summary, output_path)
     if not carto_key:
         console.print(
             "[dim]Tip: set CARTO_BASEMAP_KEY in .env to use CARTO basemap tiles.[/dim]"
         )
+    if assets:
+        console.print(
+            "[dim]Photos are viewable in the map popups via the local server:[/dim] "
+            "[bold]uv run route-recap serve[/bold]"
+        )
 
     if not no_open and Confirm.ask("Open the report in your browser?", default=True):
         webbrowser.open(output_path.resolve().as_uri())
+
+
+@app.command()
+def serve(
+    directory: Annotated[
+        Path, typer.Argument(help="Directory to serve (default: output)")
+    ] = Path("output"),
+    port: Annotated[
+        int, typer.Option("--port", "-p", help="Port to listen on")
+    ] = 8000,
+    no_open: Annotated[
+        bool, typer.Option("--no-open", help="Do not open the browser")
+    ] = False,
+) -> None:
+    """Serve reports + media over HTTP (browsers block file:// images)."""
+    directory = directory.resolve()
+    if not directory.is_dir():
+        console.print(f"[red]Folder not found: {directory}[/red]")
+        raise typer.Exit(1)
+    handler = functools.partial(
+        http.server.SimpleHTTPRequestHandler, directory=str(directory)
+    )
+    trips = sorted(directory.glob("*/index.html"))
+    console.print(
+        f"[green]Serving {directory}[/green] at "
+        f"[bold]http://127.0.0.1:{port}/[/bold]"
+    )
+    if trips:
+        console.print("Trip reports:")
+        for t in trips:
+            console.print(
+                f"  • http://127.0.0.1:{port}/{t.relative_to(directory).as_posix()}"
+            )
+    else:
+        console.print(
+            f"[dim]No reports found — expected {directory / '<trip>' / 'index.html'}[/dim]"
+        )
+    if not no_open and trips:
+        webbrowser.open(
+            f"http://127.0.0.1:{port}/{trips[0].relative_to(directory).as_posix()}"
+        )
+    with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as httpd:
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            console.print("\n[dim]Server stopped.[/dim]")
 
 
 if __name__ == "__main__":

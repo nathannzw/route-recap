@@ -177,6 +177,7 @@ def detect_stops(
                 departed_at=b.timestamp,
                 duration_s=int(gap_s),
                 media_count=a.media_count,
+                source_files=list(a.source_files),
             )
             a.is_stop = True
             a.stop_index = len(stops)

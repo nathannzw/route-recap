@@ -27,8 +27,10 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
    than forced into the route.
 6. **Builds a static report** — one `index.html` with the trip data embedded,
    a Leaflet map with the route, numbered stop pins and off-road POIs, plus a
-   `summary.json` sidecar. Leaflet and the basemap tiles load from the network
-   when you open the report.
+   `summary.json` sidecar. Trip media is hardlinked into the report folder
+   with thumbnails, and stop popups show photo strips linking back to the
+   originals. Leaflet and the basemap tiles load from the network when you
+   open the report.
 
 ## 🔄 How a trip becomes a map
 
@@ -127,7 +129,7 @@ flowchart TD
 |---|---|
 | `packages/cli` | Collects trip settings, runs the pipeline, shows progress and opens the report. |
 | `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes and reverse-geocodes. |
-| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json`. |
+| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json`; stages media hardlinks and thumbnails. |
 
 **Routing detail:** when Google routing succeeds, only road-snapped waypoints
 form the road route; points Google cannot snap are preserved as separate
@@ -186,6 +188,9 @@ exiftool -ver
 
 # 3. Optional: configure a Google Maps Platform API key
 Copy-Item .env.example .env   # then edit .env and add GOOGLE_MAPS_API_KEY
+
+# 4. Optional: ffmpeg for video preview frames in map popups
+winget install Gyan.FFmpeg
 ```
 
 ## 🗺️ Usage
@@ -200,13 +205,27 @@ uv run route-recap --input-dir "C:\Photos\iceland-2026" --name "Iceland Ring Roa
 # Keep waypoints from a different trip (home/airport/foreign photos)
 uv run route-recap --no-filter-outliers
 
+# Skip media staging/thumbnails
+uv run route-recap --no-media
+
 # See all options
 uv run route-recap --help
 ```
 
 Output lands in `output/<trip-name>/index.html` (plus a `summary.json`
-sidecar). Open the HTML in a browser; no app server is needed. The trip data
-is embedded, while Leaflet and map tiles are fetched online.
+sidecar). Trip media is hardlinked into `output/<trip-name>/media/` with
+thumbnails in `thumbs/` (no extra disk space, no copies).
+
+To view the photos in the map popups, serve the reports over HTTP —
+browsers block `file://` pages from loading `file://` images:
+
+```powershell
+uv run route-recap serve            # serves output/ at http://127.0.0.1:8000
+uv run route-recap serve --port 9000 --no-open
+```
+
+The trip data is embedded, while Leaflet, map tiles, and photo strips are
+fetched through the local server.
 
 ## ⚙️ Configuration (`.env`)
 
@@ -235,4 +254,6 @@ uv run --with piexif python scripts/make_sample_media.py   # synthetic fixtures 
 
 - **Stay & Stop Detection:** identify lodging and rest stops (shipped in v0.1)
 - **LLM Layer:** parse key highlight photos and generate trip journals / leg summaries
-- **Native Interface:** custom UI to explore interactive maps synced with full-res media
+- **Native Interface:** media retrieval shipped in v0.1 — hardlinked originals,
+  thumbnails, popup photo strips, and `route-recap serve`. A full-res media
+  explorer UI remains on the roadmap.

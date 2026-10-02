@@ -72,13 +72,14 @@ def test_dedup_untimed_kept_separately():
 
 def test_detect_stops_basic():
     pts = [
-        wp(63.4190, -19.0060, T0),
+        wp(63.4190, -19.0060, T0, files=[Path("a.jpg"), Path("b.jpg")]),
         wp(63.4192, -19.0065, T0 + timedelta(minutes=45)),  # ~35 m away
         wp(63.5000, -19.5000, T0 + timedelta(hours=1, minutes=30)),
     ]
     out, stops = detect_stops(pts)
     assert len(stops) == 1
     assert stops[0].duration_s == 45 * 60
+    assert stops[0].source_files == [Path("a.jpg"), Path("b.jpg")]
     assert out[0].is_stop
     assert out[0].stop_index == 0
 
