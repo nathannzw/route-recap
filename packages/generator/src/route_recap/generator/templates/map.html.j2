@@ -389,13 +389,25 @@
       }
 
       var bounds = [];
+      var prevSegEnd = null;
 
       (data.segments || []).forEach(function (seg) {
         var coords = decodePolyline(seg.encoded_polyline || '');
         if (!coords.length) return;
+        // Connect to the previous segment if it doesn't share an endpoint,
+        // so the route line is continuous (no visible disjoints).
+        if (prevSegEnd) {
+          var first = coords[0];
+          if (prevSegEnd[0] !== first[0] || prevSegEnd[1] !== first[1]) {
+            L.polyline([prevSegEnd, first], {
+              color: '#1a73e8', weight: 5, opacity: 0.95, dashArray: '4 6'
+            }).addTo(map);
+          }
+        }
         bounds = bounds.concat(coords);
         L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.85 }).addTo(map);
         L.polyline(coords, { color: '#1a73e8', weight: 5, opacity: 0.95 }).addTo(map);
+        prevSegEnd = coords[coords.length - 1];
       });
 
       (data.waypoints || []).forEach(function (wp) {

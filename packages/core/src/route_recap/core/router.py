@@ -293,14 +293,44 @@ class OSRMProvider:
         self,
         base_url: str = DEFAULT_OSRM_URL,
         client: httpx.Client | None = None,
+        retries: int = 3,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client(timeout=60.0)
         self._owns_client = client is None
+        self._retries = retries
 
     def close(self) -> None:
         if self._owns_client:
             self._client.close()
+
+    def _request(self, url: str, params: dict) -> httpx.Response:
+        """GET with retry/backoff — the public demo server is rate-limited."""
+        import time
+
+        last_exc: Exception | None = None
+        for attempt in range(self._retries):
+            try:
+                resp = self._client.get(url, params=params)
+                if resp.status_code == 200:
+                    return resp
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    last_exc = RoutingError(
+                        f"OSRM request failed ({resp.status_code}): "
+                        f"{_sanitize_message(resp.text[:300])}"
+                    )
+                else:
+                    raise RoutingError(
+                        f"OSRM request failed ({resp.status_code}): "
+                        f"{_sanitize_message(resp.text[:300])}"
+                    )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+            if attempt < self._retries - 1:
+                time.sleep(0.5 * (2 ** attempt))
+        raise last_exc if isinstance(last_exc, RoutingError) else RoutingError(
+            f"OSRM request failed after {self._retries} attempts: {last_exc}"
+        )
 
     def compute_route(self, waypoints: Sequence[Waypoint]) -> RouteResult:
         if len(waypoints) < 2:
@@ -312,15 +342,10 @@ class OSRMProvider:
             coord_str = ";".join(
                 f"{w.longitude:.6f},{w.latitude:.6f}" for w in chunk
             )
-            resp = self._client.get(
+            resp = self._request(
                 f"{self._base_url}/route/v1/driving/{coord_str}",
-                params={"overview": "full", "geometries": "geojson"},
+                {"overview": "full", "geometries": "geojson"},
             )
-            if resp.status_code != 200:
-                raise RoutingError(
-                    f"OSRM request failed ({resp.status_code}): "
-                    f"{_sanitize_message(resp.text[:300])}"
-                )
             data = resp.json()
             if data.get("code") != "Ok" or not data.get("routes"):
                 raise RoutingError(
@@ -426,7 +451,23 @@ def _hybrid_merge(
             logger.warning(
                 "OSRM could not bridge unsnapped run %s: %s", run, exc
             )
-            isolated.extend(run)
+            # Fall back to a straight-line connector so the route stays
+            # continuous (the car never teleports) even if OSRM is down.
+            if len(bridge_wps) >= 2:
+                coords = [
+                    (w.latitude, w.longitude) for w in bridge_wps
+                ]
+                merged.append(
+                    RouteSegment(
+                        start_index=dedup[0],
+                        end_index=dedup[-1],
+                        encoded_polyline=polyline.encode(coords, precision=5),
+                        distance_m=0.0,
+                        duration_s=0.0,
+                    )
+                )
+            else:
+                isolated.extend(run)
     merged.sort(key=lambda s: s.start_index)
     return merged, isolated
 

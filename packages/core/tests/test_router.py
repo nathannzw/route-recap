@@ -222,8 +222,8 @@ def test_hybrid_merge_keeps_isolated_points_off_road():
     assert [(s.start_index, s.end_index) for s in merged] == [(0, 2), (4, 5)]
 
 
-def test_hybrid_merge_osrm_failure_keeps_run_off_road():
-    """If OSRM can't bridge a run either, its points become off-road POIs."""
+def test_hybrid_merge_osrm_failure_keeps_route_continuous():
+    """If OSRM can't bridge a run, a straight-line connector keeps it joined."""
     points = [wp(i) for i in range(6)]
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -236,14 +236,24 @@ def test_hybrid_merge_osrm_failure_keeps_run_off_road():
     google_result = RouteResult(
         provider="google", segments=google_segments, off_road_indices=[2, 3]
     )
-    osrm = OSRMProvider(client=make_client(handler))
+    osrm = OSRMProvider(client=make_client(handler), retries=1)
     try:
         merged, isolated = _hybrid_merge(points, google_result, osrm)
     finally:
         osrm.close()
 
-    assert isolated == [2, 3]
-    assert [(s.start_index, s.end_index) for s in merged] == [(0, 1), (4, 5)]
+    # The run is bridged with a straight-line connector — route stays joined.
+    assert isolated == []
+    assert [(s.start_index, s.end_index) for s in merged] == [
+        (0, 1),
+        (1, 4),  # straight-line connector across the failed OSRM bridge
+        (4, 5),
+    ]
+    # The connector is a real polyline between the boundary points.
+    connector = merged[1]
+    decoded = polyline.decode(connector.encoded_polyline)
+    assert decoded[0] == pytest.approx((63.401, -18.999))  # snapped-ish boundary
+    assert decoded[-1] == pytest.approx((63.404, -18.996))
 
 
 def test_hybrid_merge_uses_snapped_boundary_coords():
