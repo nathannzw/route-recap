@@ -406,17 +406,17 @@ def _hybrid_merge(
     merged = list(google_result.segments)
     isolated: list[int] = []
     for run in runs:
-        if len(run) < 2:
+        has_prev = run[0] > 0
+        has_next = run[-1] < len(waypoints) - 1
+        if not (has_prev and has_next):
+            # At the trip boundary — nothing to connect to, keep as POIs.
             isolated.extend(run)
             continue
         # Bridge from the previous waypoint through the run to the next one,
         # so the route is continuous and the fjord road is fully covered.
-        bridge_indices: list[int] = []
-        if run[0] > 0:
-            bridge_indices.append(run[0] - 1)
-        bridge_indices.extend(run)
-        if run[-1] < len(waypoints) - 1:
-            bridge_indices.append(run[-1] + 1)
+        # This includes single unsnapped points between routed neighbors —
+        # leaving them out would punch a hole in the route.
+        bridge_indices: list[int] = [run[0] - 1] + run + [run[-1] + 1]
         # Drop consecutive duplicates (boundary may equal run start).
         dedup: list[int] = []
         for i in bridge_indices:

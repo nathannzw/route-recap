@@ -202,8 +202,8 @@ def test_hybrid_merge_bridges_unsnapped_run():
     ]
 
 
-def test_hybrid_merge_keeps_isolated_points_off_road():
-    """Single unsnapped points (true POIs) stay out of the route."""
+def test_hybrid_merge_bridges_single_points_between_routed():
+    """Single unsnapped points between routed neighbors are bridged, not holes."""
     points = [wp(i) for i in range(6)]
     google_segments = [
         RouteSegment(start_index=0, end_index=2, encoded_polyline="a", distance_m=1000, duration_s=60),
@@ -218,8 +218,34 @@ def test_hybrid_merge_keeps_isolated_points_off_road():
     finally:
         osrm.close()
 
-    assert isolated == [1, 3]
-    assert [(s.start_index, s.end_index) for s in merged] == [(0, 2), (4, 5)]
+    # Both single points are bridged (0→1→2 and 2→3→4) — no holes.
+    assert isolated == []
+    assert [(s.start_index, s.end_index) for s in merged] == [
+        (0, 2),
+        (0, 2),  # bridge 0→1→2
+        (2, 4),  # bridge 2→3→4
+        (4, 5),
+    ]
+
+
+def test_hybrid_merge_keeps_boundary_points_off_road():
+    """Unsnapped points at the trip start/end have nothing to connect to."""
+    points = [wp(i) for i in range(6)]
+    google_segments = [
+        RouteSegment(start_index=2, end_index=3, encoded_polyline="a", distance_m=1000, duration_s=60),
+        RouteSegment(start_index=4, end_index=5, encoded_polyline="b", distance_m=1000, duration_s=60),
+    ]
+    google_result = RouteResult(
+        provider="google", segments=google_segments, off_road_indices=[0, 1]
+    )
+    osrm = OSRMProvider(client=make_client(_osrm_ok_handler()))
+    try:
+        merged, isolated = _hybrid_merge(points, google_result, osrm)
+    finally:
+        osrm.close()
+
+    assert isolated == [0, 1]  # no previous neighbor — can't bridge
+    assert [(s.start_index, s.end_index) for s in merged] == [(2, 3), (4, 5)]
 
 
 def test_hybrid_merge_osrm_failure_keeps_route_continuous():
