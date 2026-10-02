@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "route-recap-cli"
+version = "0.1.0"
+description = "Interactive command-line interface for route-recap."
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "route-recap-core",
+    "route-recap-generator",
+]
+
+[tool.uv.sources]
+route-recap-core = { workspace = true }
+route-recap-generator = { workspace = true }
+
+[project.scripts]
+route-recap = "route_recap.cli.main:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]

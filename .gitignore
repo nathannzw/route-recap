@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# route-recap: local trip media and generated reports
+/data/*
+!/data/.gitkeep
+/output/*
+!/output/.gitkeep
+

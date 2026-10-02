@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ trip_name }} · route-recap</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --ink: #10243e;
+      --muted: #5b6b81;
+      --brand: #157a8c;
+      --brand-deep: #0b2f5b;
+      --accent: #ff6b4a;
+      --card: #ffffff;
+      --bg: #f4f6fb;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      background: linear-gradient(120deg, var(--brand-deep) 0%, var(--brand) 90%);
+      color: #fff;
+      padding: 20px 24px;
+      box-shadow: 0 2px 14px rgba(11, 47, 91, 0.25);
+    }
+    .banner-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px 32px;
+      align-items: flex-end;
+      justify-content: space-between;
+    }
+    .title-block h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
+    }
+    .title-block .sub {
+      margin-top: 6px;
+      font-size: 0.85rem;
+      color: rgba(255, 255, 255, 0.78);
+    }
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .stat {
+      background: rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 12px;
+      padding: 10px 16px;
+      min-width: 96px;
+      text-align: center;
+      backdrop-filter: blur(4px);
+    }
+    .stat .value {
+      display: block;
+      font-size: 1.15rem;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .stat .label {
+      display: block;
+      margin-top: 2px;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(255, 255, 255, 0.75);
+    }
+    #map {
+      flex: 1;
+      min-height: 420px;
+      width: 100%;
+    }
+    footer {
+      padding: 10px 24px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+      background: #fff;
+      border-top: 1px solid #e6eaf2;
+    }
+    /* stop pins */
+    .stop-pin-wrap { background: transparent; border: none; }
+    .stop-pin {
+      width: 30px;
+      height: 30px;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      background: var(--accent);
+      border: 2px solid #fff;
+      box-shadow: 0 2px 8px rgba(16, 36, 62, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: #fff;
+    }
+    .stop-pin span { transform: rotate(45deg); }
+    /* popup */
+    .leaflet-popup-content-wrapper {
+      border-radius: 12px;
+      box-shadow: 0 6px 24px rgba(16, 36, 62, 0.22);
+    }
+    .stop-popup h3 {
+      font-size: 1rem;
+      color: var(--ink);
+      margin-bottom: 4px;
+    }
+    .stop-popup .addr {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .stop-popup .times {
+      font-size: 0.78rem;
+      color: var(--brand);
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+    .stop-popup .count { font-size: 0.78rem; color: var(--muted); }
+    /* empty state */
+    .empty-note {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1000;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 6px 24px rgba(16, 36, 62, 0.2);
+      padding: 14px 20px;
+      font-size: 0.9rem;
+      color: var(--muted);
+      pointer-events: none;
+    }
+    @media (max-width: 640px) {
+      header { padding: 14px 16px; }
+      .title-block h1 { font-size: 1.25rem; }
+      .stat { min-width: 72px; padding: 8px 10px; }
+      .stat .value { font-size: 1rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="banner-inner">
+      <div class="title-block">
+        <h1>{{ trip_name }}</h1>
+        <p class="sub">{{ date_range }} · generated {{ generated_at }}</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="value">{{ distance_display }}</span><span class="label">Distance</span></div>
+        <div class="stat"><span class="value">{{ driving_display }}</span><span class="label">Driving</span></div>
+        <div class="stat"><span class="value">{{ stop_duration_display }}</span><span class="label">Stop Time</span></div>
+        <div class="stat"><span class="value">{{ stop_count }}</span><span class="label">Stops</span></div>
+        <div class="stat"><span class="value">{{ media_count }}</span><span class="label">Media</span></div>
+      </div>
+    </div>
+  </header>
+
+  <div id="map"></div>
+
+  <footer>
+    <span>Generated by route-recap · {{ provider_note }}</span>
+    <span>Map data © OpenStreetMap contributors · Leaflet</span>
+  </footer>
+
+  <script id="trip-data" type="application/json">{{ trip_json | safe }}</script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    (function () {
+      var data = JSON.parse(document.getElementById('trip-data').textContent);
+
+      function esc(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+      function decodePolyline(str, precision) {
+        precision = precision || 5;
+        var index = 0, lat = 0, lng = 0, coords = [];
+        var factor = Math.pow(10, precision), byte, shift, result;
+        while (index < str.length) {
+          shift = 0; result = 0;
+          do { byte = str.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+          var dlat = (result & 1) ? ~(result >> 1) : (result >> 1);
+          lat += dlat;
+          shift = 0; result = 0;
+          do { byte = str.charCodeAt(index++) - 63; result |= (byte & 0x1f) << shift; shift += 5; } while (byte >= 0x20);
+          var dlng = (result & 1) ? ~(result >> 1) : (result >> 1);
+          lng += dlng;
+          coords.push([lat / factor, lng / factor]);
+        }
+        return coords;
+      }
+      function fmtTime(iso) {
+        var d = new Date(iso);
+        return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+
+      var map = L.map('map', { scrollWheelZoom: true }).setView([20, 0], 2);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19
+      }).addTo(map);
+
+      var bounds = [];
+
+      (data.segments || []).forEach(function (seg) {
+        var coords = decodePolyline(seg.encoded_polyline || '');
+        if (!coords.length) return;
+        bounds = bounds.concat(coords);
+        L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.85 }).addTo(map);
+        L.polyline(coords, { color: '#1a73e8', weight: 5, opacity: 0.95 }).addTo(map);
+      });
+
+      (data.waypoints || []).forEach(function (wp) {
+        bounds.push([wp.latitude, wp.longitude]);
+        if (wp.is_stop) return; // stops get numbered pins
+        L.circleMarker([wp.latitude, wp.longitude], {
+          radius: 4,
+          color: '#1a73e8',
+          fillColor: '#ffffff',
+          fillOpacity: 1,
+          weight: 2
+        }).addTo(map);
+      });
+
+      (data.stops || []).forEach(function (stop, i) {
+        var icon = L.divIcon({
+          className: 'stop-pin-wrap',
+          html: '<div class="stop-pin"><span>' + (i + 1) + '</span></div>',
+          iconSize: [30, 30],
+          iconAnchor: [15, 32],
+          popupAnchor: [0, -28]
+        });
+        var title = stop.name ? esc(stop.name) : 'Stop ' + (i + 1);
+        var html = '<div class="stop-popup"><h3>' + title + '</h3>';
+        if (stop.address) html += '<p class="addr">' + esc(stop.address) + '</p>';
+        if (stop.arrived_at) {
+          html += '<p class="times">' + fmtTime(stop.arrived_at);
+          if (stop.departed_at) html += ' – ' + fmtTime(stop.departed_at);
+          html += '</p>';
+        }
+        html += '<p class="count">' + stop.media_count + (stop.media_count === 1 ? ' photo' : ' photos') + '</p></div>';
+        L.marker([stop.latitude, stop.longitude], { icon: icon }).addTo(map).bindPopup(html);
+      });
+
+      if (bounds.length) {
+        map.fitBounds(L.latLngBounds(bounds), { padding: [40, 40], maxZoom: 14 });
+      } else {
+        var note = document.createElement('div');
+        note.className = 'empty-note';
+        note.textContent = 'No geotagged route data found for this trip.';
+        document.getElementById('map').appendChild(note);
+      }
+    })();
+  </script>
+</body>
+</html>

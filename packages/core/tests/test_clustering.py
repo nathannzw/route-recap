@@ -1,0 +1,107 @@
+"""Unit tests for route_recap.core.clustering."""
+
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from route_recap.core.clustering import deduplicate, detect_stops, haversine_m
+from route_recap.core.models import Waypoint
+
+T0 = datetime(2026, 8, 14, 9, 0, 0)
+
+
+def wp(lat, lon, t, media_count=1, files=None):
+    return Waypoint(
+        latitude=lat,
+        longitude=lon,
+        timestamp=t,
+        media_count=media_count,
+        source_files=files or [],
+    )
+
+
+def test_haversine_known_distances():
+    # 1 degree of latitude ≈ 111.19 km at the equator
+    assert haversine_m(0.0, 0.0, 1.0, 0.0) == pytest.approx(111_194.9, rel=1e-3)
+    assert haversine_m(63.4, -19.0, 63.4, -19.0) == 0.0
+
+
+def test_dedup_burst_collapses():
+    pts = [
+        wp(63.4190, -19.0060, T0, files=[Path("a.jpg")]),
+        wp(63.4191, -19.0061, T0 + timedelta(minutes=1), files=[Path("b.jpg")]),
+        wp(63.4192, -19.0062, T0 + timedelta(minutes=4), files=[Path("c.jpg")]),
+    ]
+    out = deduplicate(pts)
+    assert len(out) == 1
+    assert out[0].media_count == 3
+    assert len(out[0].source_files) == 3
+    assert out[0].timestamp == T0  # anchor is the first photo
+
+
+def test_dedup_far_away_separates():
+    pts = [
+        wp(63.0, -19.0, T0),
+        wp(64.0, -19.0, T0 + timedelta(minutes=2)),  # ~111 km away
+    ]
+    assert len(deduplicate(pts)) == 2
+
+
+def test_dedup_window_exceeded_separates():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(63.4191, -19.0061, T0 + timedelta(minutes=6)),  # same spot, > 5 min
+    ]
+    assert len(deduplicate(pts)) == 2
+
+
+def test_dedup_untimed_kept_separately():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(63.4191, -19.0061, None),
+    ]
+    out = deduplicate(pts)
+    assert len(out) == 2
+
+
+def test_detect_stops_basic():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(63.4192, -19.0065, T0 + timedelta(minutes=45)),  # ~35 m away
+        wp(63.5000, -19.5000, T0 + timedelta(hours=1, minutes=30)),
+    ]
+    out, stops = detect_stops(pts)
+    assert len(stops) == 1
+    assert stops[0].duration_s == 45 * 60
+    assert out[0].is_stop
+    assert out[0].stop_index == 0
+
+
+def test_detect_stops_short_gap_is_not_a_stop():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(63.4192, -19.0065, T0 + timedelta(minutes=10)),
+    ]
+    _, stops = detect_stops(pts)
+    assert stops == []
+
+
+def test_detect_stops_moved_far_within_threshold_is_not_a_stop():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(64.4190, -19.0060, T0 + timedelta(hours=1)),  # 111 km in 1 h
+    ]
+    _, stops = detect_stops(pts)
+    assert stops == []
+
+
+def test_detect_stops_overnight_bypasses_distance():
+    pts = [
+        wp(63.4190, -19.0060, T0),
+        wp(64.5000, -18.0000, T0 + timedelta(hours=7)),  # ~130 km away
+    ]
+    out, stops = detect_stops(pts)
+    assert len(stops) == 1
+    assert stops[0].duration_s == 7 * 3600
+    assert out[0].is_stop

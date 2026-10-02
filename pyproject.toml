@@ -1,0 +1,23 @@
+# route-recap workspace root
+# This is a uv workspace: every package under packages/ shares one lockfile
+# and one virtual environment (.venv). Install everything with `uv sync`.
+
+[project]
+name = "route-recap"
+version = "0.1.0"
+description = "Reconstruct continuous road-trip routes from iPhone travel media geotags."
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+addopts = "-ra -q"

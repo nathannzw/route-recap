@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "route-recap-core"
+version = "0.1.0"
+description = "Core pipeline for route-recap: EXIF extraction, waypoint clustering, and road routing."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9",
+    "PyExifTool>=0.5.6",
+    "pillow>=10.4",
+    "pillow-heif>=0.19",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+    "polyline>=2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "route-recap-generator"
+version = "0.1.0"
+description = "Static, self-contained HTML map report generator for route-recap."
+requires-python = ">=3.12"
+dependencies = [
+    "jinja2>=3.1",
+    "route-recap-core",
+]
+
+[tool.uv.sources]
+route-recap-core = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"route_recap.generator" = ["templates/*.j2"]
