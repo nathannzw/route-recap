@@ -53,6 +53,8 @@ def _json_for_script(data: object) -> str:
 def _provider_note(summary: TripSummary) -> str:
     if summary.routing_provider == "google":
         return "routed with Google Maps"
+    if summary.routing_provider == "google+osrm":
+        return "routed with Google Maps + OSRM"
     if summary.routing_provider == "osrm":
         return "routed with OSRM"
     return f"routing: {summary.routing_provider or 'none'}"

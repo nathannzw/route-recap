@@ -84,14 +84,14 @@ class GoogleRoutesProvider:
             self._client.close()
 
     def compute_route(self, waypoints: Sequence[Waypoint]) -> RouteResult:
-        """Route only the on-road waypoints; report off-road ones separately.
+        """Route each contiguous run of on-road waypoints separately.
 
-        Road trips are driven on roads: waypoints that Snap to Roads can't
-        place (viewpoints, trailheads, parking lots further than ~300 m from
-        a road) are *not* forced through computeRoutes — forcing them in
-        makes Google return no route at all. They are excluded from the
-        route and returned via ``off_road_indices`` so the caller can keep
-        them as standalone POIs.
+        Waypoints that Snap to Roads can't place (viewpoints, trailheads,
+        parking lots further than ~300 m from a road) are excluded from the
+        route and returned via ``off_road_indices``. Each contiguous run of
+        snapped waypoints is routed on its own — Google never routes *across*
+        an unsnapped gap, so the caller can bridge those gaps with OSRM
+        without double-counting distance.
         """
         if len(waypoints) < 2:
             return RouteResult(provider=self.name)
@@ -102,31 +102,43 @@ class GoogleRoutesProvider:
                 "Google Snap to Roads placed fewer than 2 waypoints on roads"
             )
 
-        on_road: list[tuple[int, Waypoint]] = []
-        for i in sorted(snap_map):
-            lat, lon = snap_map[i]
-            base = waypoints[i]
-            on_road.append(
-                (
-                    i,
-                    base.model_copy(update={"latitude": lat, "longitude": lon}),
-                )
-            )
-        # Several photos can snap to the same road point — drop exact
-        # consecutive duplicates so computeRoutes isn't fed zero-length legs.
-        index_map: list[int] = []
-        routed: list[Waypoint] = []
-        for i, w in on_road:
-            if (
-                routed
-                and routed[-1].latitude == w.latitude
-                and routed[-1].longitude == w.longitude
-            ):
-                continue
-            index_map.append(i)
-            routed.append(w)
+        # Split into maximal runs of consecutive snapped indices.
+        runs: list[list[int]] = []
+        current: list[int] = []
+        for i in range(len(waypoints)):
+            if i in snap_map:
+                current.append(i)
+            elif current:
+                runs.append(current)
+                current = []
+        if current:
+            runs.append(current)
 
-        segments = self._compute_routes(routed, index_map)
+        segments: list[RouteSegment] = []
+        for run in runs:
+            if len(run) < 2:
+                continue  # single snapped point — covered by a neighbor bridge
+            # Several photos can snap to the same road point — drop exact
+            # consecutive duplicates so computeRoutes isn't fed zero-length legs.
+            index_map: list[int] = []
+            routed: list[Waypoint] = []
+            for i in run:
+                lat, lon = snap_map[i]
+                w = waypoints[i].model_copy(
+                    update={"latitude": lat, "longitude": lon}
+                )
+                if (
+                    routed
+                    and routed[-1].latitude == w.latitude
+                    and routed[-1].longitude == w.longitude
+                ):
+                    continue
+                index_map.append(i)
+                routed.append(w)
+            if len(routed) < 2:
+                continue
+            segments.extend(self._compute_routes(routed, index_map))
+
         off_road = [i for i in range(len(waypoints)) if i not in snap_map]
         return RouteResult(
             provider=self.name,
@@ -331,6 +343,76 @@ class OSRMProvider:
 # -------------------------------------------------------------- orchestration
 
 
+def _hybrid_merge(
+    waypoints: Sequence[Waypoint],
+    google_result: RouteResult,
+    osrm: OSRMProvider,
+) -> tuple[list[RouteSegment], list[int]]:
+    """Bridge Google's unsnapped runs with OSRM.
+
+    Google's road network is incomplete in remote areas (gravel side roads,
+    fjord viewpoints) — Snap to Roads drops those points even though roads
+    exist. OSRM uses OpenStreetMap data, which covers them. Each consecutive
+    run of unsnapped waypoints is routed via OSRM *including its boundary
+    points* (the last snapped point before the run and the first after), so
+    the merged route stays continuous and no distance is double-counted
+    (Google never routes across the gap). Only isolated single points (true
+    off-road POIs) are kept out of the route.
+
+    Returns ``(merged_segments, isolated_indices)``.
+    """
+    unsnapped = sorted(google_result.off_road_indices)
+    if not unsnapped:
+        return list(google_result.segments), []
+
+    # Split into maximal runs of consecutive indices.
+    runs: list[list[int]] = []
+    for idx in unsnapped:
+        if runs and idx == runs[-1][-1] + 1:
+            runs[-1].append(idx)
+        else:
+            runs.append([idx])
+
+    merged = list(google_result.segments)
+    isolated: list[int] = []
+    for run in runs:
+        if len(run) < 2:
+            isolated.extend(run)
+            continue
+        # Bridge from the previous waypoint through the run to the next one,
+        # so the route is continuous and the fjord road is fully covered.
+        bridge_indices: list[int] = []
+        if run[0] > 0:
+            bridge_indices.append(run[0] - 1)
+        bridge_indices.extend(run)
+        if run[-1] < len(waypoints) - 1:
+            bridge_indices.append(run[-1] + 1)
+        # Drop consecutive duplicates (boundary may equal run start).
+        dedup: list[int] = []
+        for i in bridge_indices:
+            if dedup and dedup[-1] == i:
+                continue
+            dedup.append(i)
+        if len(dedup) < 2:
+            isolated.extend(run)
+            continue
+        try:
+            bridge_wps = [waypoints[i] for i in dedup]
+            result = osrm.compute_route(bridge_wps)
+            offset = dedup[0]
+            for seg in result.segments:
+                seg.start_index += offset
+                seg.end_index += offset
+            merged.extend(result.segments)
+        except (RoutingError, httpx.HTTPError) as exc:
+            logger.warning(
+                "OSRM could not bridge unsnapped run %s: %s", run, exc
+            )
+            isolated.extend(run)
+    merged.sort(key=lambda s: s.start_index)
+    return merged, isolated
+
+
 def compute_route(
     waypoints: Sequence[Waypoint],
     *,
@@ -341,7 +423,10 @@ def compute_route(
     """Route a waypoint list through the best available provider.
 
     Google is attempted first when a key is available; any failure falls
-    back to OSRM. Raises :class:`RoutingError` when everything fails.
+    back to OSRM. When Google succeeds but cannot snap some waypoints
+    (remote roads it lacks), the unsnapped runs are bridged via OSRM so the
+    route stays continuous. Raises :class:`RoutingError` when everything
+    fails.
     """
     if len(waypoints) < 2:
         return RouteResult(provider="none", segments=[])
@@ -360,6 +445,20 @@ def compute_route(
         try:
             result = google.compute_route(waypoints)
             if result.segments:
+                if result.off_road_indices:
+                    osrm = OSRMProvider(base, client=client)
+                    try:
+                        merged, isolated = _hybrid_merge(
+                            waypoints, result, osrm
+                        )
+                        if merged:
+                            return RouteResult(
+                                provider="google+osrm",
+                                segments=merged,
+                                off_road_indices=isolated,
+                            )
+                    finally:
+                        osrm.close()
                 return result
             errors.append("Google returned no route segments")
         except (RoutingError, httpx.HTTPError) as exc:
@@ -505,11 +604,16 @@ def _google_result(result: dict) -> dict[str, str]:
     address = result.get("formatted_address", "")
     name: str | None = None
     for component in result.get("address_components", []):
-        if any(t in _GOOGLE_NAME_TYPES for t in component.get("types", [])):
+        types = component.get("types", [])
+        if "plus_code" in types:
+            continue  # skip Plus Codes like "9CP77234+XG"
+        if any(t in _GOOGLE_NAME_TYPES for t in types):
             name = component.get("long_name")
             break
     if name is None or name.isdigit():
-        name = address.split(",")[0]
+        # Fall back to the first non-Plus-Code part of the address.
+        parts = [p.strip() for p in address.split(",") if p.strip()]
+        name = next((p for p in parts if "+" not in p), parts[0] if parts else None)
     return {"name": name, "address": address}
 
 

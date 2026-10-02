@@ -184,6 +184,55 @@
     .legend .swatch.waypoint { background: #fff; border: 2px solid #1a73e8; width: 8px; height: 8px; }
     .legend .swatch.offroad { background: #fbbf24; border: 2px solid #a16207; width: 8px; height: 8px; }
     .legend .swatch.stop { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
+    .legend .swatch.dir { width: 0; height: 0; border: none; border-radius: 0; border-left: 8px solid #0b2f5b; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+    /* animation controls */
+    .anim-controls {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(16, 36, 62, 0.2);
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.78rem;
+      color: var(--ink);
+    }
+    .anim-controls button {
+      border: none;
+      background: var(--brand);
+      color: #fff;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 0.85rem;
+      line-height: 1;
+      flex: none;
+    }
+    .anim-controls button:hover { background: var(--brand-deep); }
+    .anim-controls select {
+      border: 1px solid #d5dce8;
+      border-radius: 6px;
+      padding: 3px 6px;
+      font-size: 0.72rem;
+      color: var(--ink);
+      background: #fff;
+    }
+    .anim-controls input[type="range"] {
+      width: 170px;
+      accent-color: var(--brand);
+    }
+    .anim-controls #anim-label { min-width: 150px; text-align: center; display: flex; flex-direction: column; gap: 1px; }
+    .anim-controls .anim-label-main { font-weight: 600; white-space: nowrap; }
+    .anim-controls .anim-label-sub { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
+    .car-icon .car-body { filter: drop-shadow(0 3px 5px rgba(16, 36, 62, 0.4)); transform-origin: center; will-change: transform; }
+    .dir-arrow { background: transparent; border: none; }
+    .dir-arrow svg { filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.85)); }
     /* empty state */
     .empty-note {
       position: absolute;
@@ -204,6 +253,9 @@
       .title-block h1 { font-size: 1.25rem; }
       .stat { min-width: 72px; padding: 8px 10px; }
       .stat .value { font-size: 1rem; }
+      .anim-controls { gap: 6px; padding: 6px 8px; }
+      .anim-controls input[type="range"] { width: 100px; }
+      .anim-controls #anim-label { min-width: 110px; }
     }
   </style>
 </head>
@@ -232,6 +284,21 @@
       <span><i class="swatch waypoint"></i> Waypoint</span>
       <span><i class="swatch offroad"></i> Off-road spot</span>
       <span><i class="swatch stop"></i> Stop</span>
+      <span><i class="swatch dir"></i> Direction</span>
+    </div>
+    <div class="anim-controls" id="anim-controls" style="display:none">
+      <button id="anim-play" title="Play / pause">▶</button>
+      <select id="anim-speed" title="Animation speed">
+        <option value="0.25">Slow</option>
+        <option value="1" selected>Normal</option>
+        <option value="4">Fast</option>
+        <option value="16">Turbo</option>
+      </select>
+      <input id="anim-slider" type="range" min="0" max="1000" step="1" value="0" title="Trip progress" />
+      <div id="anim-label">
+        <span class="anim-label-main" id="anim-label-main">–</span>
+        <span class="anim-label-sub" id="anim-label-sub"></span>
+      </div>
     </div>
   </div>
 
@@ -378,6 +445,319 @@
         html += assetStrip(stop.source_files, 6) + '</div>';
         addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon }).bindPopup(html), true);
       });
+
+      // ---- trip animation: directional arrows + driving car + slider ----
+
+      var CAR_SVG = '<div class="car-body">'
+        + '<svg width="48" height="26" viewBox="0 0 96 52">'
+        + '<ellipse cx="48" cy="46.5" rx="38" ry="3" fill="#1b2733" opacity="0.18"/>'
+        + '<path d="M12 38 L10 26 Q10 18 18 16 L33 11 Q48 8 63 11 L79 16 Q88 19 89 27 L87 38 Z" fill="#ffffff" stroke="#2b3a4a" stroke-width="3.5" stroke-linejoin="round"/>'
+        + '<path d="M19 17 L31 13 L34 21 L22 24 Z" fill="#cfe6ff"/>'
+        + '<path d="M36 13 L61 12 L62 21 L35 21 Z" fill="#cfe6ff"/>'
+        + '<path d="M64 12 L79 16 L77 24 L63 21 Z" fill="#cfe6ff"/>'
+        + '<circle cx="26" cy="38" r="9.2" fill="#26323f"/>'
+        + '<circle cx="26" cy="38" r="3.6" fill="#dfe6ee"/>'
+        + '<circle cx="70" cy="38" r="9.2" fill="#26323f"/>'
+        + '<circle cx="70" cy="38" r="3.6" fill="#dfe6ee"/>'
+        + '<rect x="83.5" y="27" width="3" height="5" rx="1.2" fill="#ffd97a"/>'
+        + '<rect x="7" y="27" width="2.4" height="4" rx="1" fill="#ff8d6b"/>'
+        + '</svg></div>';
+      var ARROW_SVG = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M4 3 L12 8 L4 13 Z" fill="#0b2f5b" fill-opacity="0.55"/></svg>';
+
+      function bearingDeg(a, b) {
+        var dLon = (b.lon - a.lon) * Math.PI / 180;
+        var lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
+        var y = Math.sin(dLon) * Math.cos(lat2);
+        var x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+        return Math.atan2(y, x) * 180 / Math.PI;
+      }
+      function rotateEl(el, deg) {
+        if (el) el.style.transform = 'rotate(' + deg + 'deg)';
+      }
+      function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+      // Build a monotonic (progress, position) track from route segments.
+      // Time mode: interpolated timestamps along each segment, holding the
+      // car still during stops (gaps between segments). Distance mode:
+      // fallback when waypoint timestamps are missing.
+      function buildTrack() {
+        var segs = data.segments || [];
+        var wps = data.waypoints || [];
+        if (!segs.length) return null;
+        var timed = true, t0 = 0;
+        segs.forEach(function (s) {
+          var a = wps[s.start_index], b = wps[s.end_index];
+          if (!a || !b || !a.timestamp || !b.timestamp) timed = false;
+        });
+        if (timed) {
+          t0 = Date.parse(wps[segs[0].start_index].timestamp);
+          if (!isFinite(t0)) timed = false;
+        }
+        var track = [];
+        if (timed) {
+          var prevEnd = null, prevPos = null, tMax = 0, kmSoFar = 0;
+          segs.forEach(function (s) {
+            var coords = decodePolyline(s.encoded_polyline || '');
+            if (coords.length < 2) return;
+            var startT = (Date.parse(wps[s.start_index].timestamp) - t0) / 1000;
+            var endT = (Date.parse(wps[s.end_index].timestamp) - t0) / 1000;
+            // Use REAL elapsed time so the clock, day counter, and stop
+            // windows line up with the actual trip timeline.
+            var dur = Math.max(endT - startT, 1);
+            var segEnd = startT + dur;
+            if (prevPos && startT > prevEnd) {
+              track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+              track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+            }
+            var dists = [], totalD = 0;
+            for (var i = 1; i < coords.length; i++) {
+              var d = map.distance(coords[i - 1], coords[i]);
+              dists.push(d); totalD += d;
+            }
+            var cum = 0;
+            for (var j = 0; j < coords.length; j++) {
+              if (j > 0) cum += dists[j - 1];
+              var frac = totalD > 0 ? cum / totalD : 0;
+              var v = startT + dur * frac;
+              track.push({ v: v, lat: coords[j][0], lon: coords[j][1], km: kmSoFar + cum / 1000 });
+              if (v > tMax) tMax = v;
+            }
+            prevEnd = segEnd; prevPos = coords[coords.length - 1];
+            kmSoFar += totalD / 1000;
+          });
+          track.sort(function (x, y) { return x.v - y.v; });
+          return { mode: 'time', track: track, max: Math.max(tMax, 1), t0: t0 };
+        }
+        var km = 0;
+        segs.forEach(function (s) {
+          var coords = decodePolyline(s.encoded_polyline || '');
+          if (coords.length < 2) return;
+          var dists = [], totalD = 0;
+          for (var i = 1; i < coords.length; i++) {
+            var d = map.distance(coords[i - 1], coords[i]);
+            dists.push(d); totalD += d;
+          }
+          var cum = 0;
+          for (var j = 0; j < coords.length; j++) {
+            if (j > 0) cum += dists[j - 1];
+            track.push({ v: km + cum / 1000, lat: coords[j][0], lon: coords[j][1], km: km + cum / 1000 });
+          }
+          km += totalD / 1000;
+        });
+        return { mode: 'dist', track: track, max: Math.max(km, 1), t0: 0 };
+      }
+
+      function addArrows() {
+        var cap = 120, placed = 0;
+        (data.segments || []).forEach(function (seg) {
+          if (placed >= cap) return;
+          var coords = decodePolyline(seg.encoded_polyline || '');
+          if (coords.length < 2) return;
+          var dists = [], totalD = 0;
+          for (var i = 1; i < coords.length; i++) {
+            var d = map.distance(coords[i - 1], coords[i]);
+            dists.push(d); totalD += d;
+          }
+          var km = totalD / 1000;
+          var n = km > 12 ? 4 : km > 4 ? 3 : km > 1 ? 2 : 1;
+          for (var k = 1; k <= n && placed < cap; k++) {
+            var target = totalD * k / (n + 1);
+            var cum = 0, idx = 0;
+            for (var j = 0; j < dists.length; j++) {
+              cum += dists[j];
+              if (cum >= target) { idx = j + 1; break; }
+            }
+            if (idx === 0) continue;
+            var a = coords[idx - 1], b = coords[idx];
+            var before = cum - dists[idx - 1];
+            var frac = dists[idx - 1] ? (target - before) / dists[idx - 1] : 0;
+            var lat = a[0] + (b[0] - a[0]) * frac;
+            var lon = a[1] + (b[1] - a[1]) * frac;
+            var ic = L.divIcon({ className: 'dir-arrow', html: ARROW_SVG, iconSize: [16, 16], iconAnchor: [8, 8] });
+            var m = L.marker([lat, lon], { icon: ic, interactive: false }).addTo(map);
+            rotateEl(m.getElement().querySelector('svg'), bearingDeg(a, b) - 90);
+            placed++;
+          }
+        });
+      }
+
+      var anim = null;
+      var trackInfo = buildTrack();
+      if (trackInfo && trackInfo.track.length > 1) {
+        anim = {
+          track: trackInfo.track,
+          mode: trackInfo.mode,
+          t0: trackInfo.t0,
+          max: trackInfo.max,
+          current: 0,
+          pct: 1,
+          playing: false,
+          dragging: false,
+          lastFrame: null,
+          heading: 0
+        };
+
+        var LOOKAHEAD_M = 15;
+        function angleDiff(a, b) { return ((b - a + 540) % 360) - 180; }
+        function headingAt(p) {
+          var t = anim.track;
+          if (p.lo >= t.length - 1) return null;
+          var from = L.latLng(p.lat, p.lon);
+          var acc = 0;
+          for (var j = p.lo; j < t.length - 1; j++) {
+            var nxt = L.latLng(t[j + 1].lat, t[j + 1].lon);
+            acc += from.distanceTo(nxt);
+            from = nxt;
+            if (acc >= LOOKAHEAD_M) {
+              return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: nxt.lat, lon: nxt.lng });
+            }
+          }
+          return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: t[t.length - 1].lat, lon: t[t.length - 1].lon });
+        }
+        (function () {
+          var t = anim.track;
+          for (var i = 0; i < t.length - 1; i++) {
+            if (t[i].lat !== t[i + 1].lat || t[i].lon !== t[i + 1].lon) {
+              anim.heading = bearingDeg(t[i], t[i + 1]) - 90;
+              return;
+            }
+          }
+        })();
+
+        function posAt(v) {
+          var t = anim.track;
+          if (v <= t[0].v) return { v: t[0].v, lat: t[0].lat, lon: t[0].lon, a: t[0], b: t[0], lo: 0, km: t[0].km };
+          if (v >= t[t.length - 1].v) {
+            var e = t[t.length - 1];
+            return { v: e.v, lat: e.lat, lon: e.lon, a: e, b: e, lo: t.length - 1, km: e.km };
+          }
+          var lo = 0, hi = t.length - 1;
+          while (hi - lo > 1) {
+            var mid = (lo + hi) >> 1;
+            if (t[mid].v <= v) lo = mid; else hi = mid;
+          }
+          var a = t[lo], b = t[hi];
+          var span = (b.v - a.v) || 1;
+          var f = (v - a.v) / span;
+          return { v: v, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, a: a, b: b, lo: lo, km: a.km + (b.km - a.km) * f };
+        }
+
+        var carIcon = L.divIcon({
+          className: 'car-icon',
+          html: CAR_SVG,
+          iconSize: [48, 26],
+          iconAnchor: [24, 13],
+          popupAnchor: [0, -15]
+        });
+        var car = L.marker([anim.track[0].lat, anim.track[0].lon], { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
+
+        addArrows();
+
+        var controls = document.getElementById('anim-controls');
+        var playBtn = document.getElementById('anim-play');
+        var speedSel = document.getElementById('anim-speed');
+        var slider = document.getElementById('anim-slider');
+        var labelMain = document.getElementById('anim-label-main');
+        var labelSub = document.getElementById('anim-label-sub');
+        controls.style.display = 'flex';
+
+        function haversineKm(aLat, aLon, bLat, bLon) {
+          var R = 6371.0088;
+          var p1 = aLat * Math.PI / 180, p2 = bLat * Math.PI / 180;
+          var dp = (bLat - aLat) * Math.PI / 180, dl = (bLon - aLon) * Math.PI / 180;
+          var h = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+          return 2 * R * Math.asin(Math.sqrt(h));
+        }
+        function fmtKm(km) {
+          if (data.unit === 'mi') return (km / 1.609344).toFixed(1) + ' mi';
+          return km.toFixed(1) + ' km';
+        }
+        function nextStopInfo(p) {
+          var stops = data.stops || [];
+          if (!stops.length) return null;
+          var nowMs = anim.mode === 'time' ? anim.t0 + anim.current * 1000 : null;
+          var best = null;
+          for (var i = 0; i < stops.length; i++) {
+            var s = stops[i];
+            var dist = haversineKm(p.lat, p.lon, s.latitude, s.longitude);
+            var name = s.name || ('Stop ' + (i + 1));
+            if (nowMs !== null && s.arrived_at) {
+              var arr = Date.parse(s.arrived_at);
+              var dep = s.departed_at ? Date.parse(s.departed_at) : arr;
+              if (nowMs >= arr && nowMs <= dep) return { at: true, name: name, dist: dist };
+              if (arr > nowMs && (!best || arr < best.arr)) best = { at: false, name: name, dist: dist, arr: arr };
+            } else if (!best || dist < best.dist) {
+              best = { at: false, name: name, dist: dist };
+            }
+          }
+          return best;
+        }
+        function animLabel(p) {
+          var main, sub = '';
+          if (anim.mode === 'time') {
+            var d = new Date(anim.t0 + anim.current * 1000);
+            var day = Math.floor(anim.current / 86400) + 1;
+            main = 'Day ' + day + ' · ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ' · ' + fmtKm(p.km);
+          } else {
+            main = fmtKm(p.km);
+          }
+          var ns = nextStopInfo(p);
+          if (ns) sub = ns.at ? 'At: ' + ns.name : 'Next: ' + ns.name + ' · ' + fmtKm(ns.dist);
+          return { main: main, sub: sub };
+        }
+        function stepPerSec() { return anim.max * anim.pct / 100; }
+        function syncAnim() {
+          var p = posAt(anim.current);
+          car.setLatLng([p.lat, p.lon]);
+          // Parked (stop hold): keep the arrival heading instead of spinning.
+          var parked = p.a && p.b && p.a.lat === p.b.lat && p.a.lon === p.b.lon;
+          if (!parked) {
+            var bearing = headingAt(p);
+            if (bearing !== null && isFinite(bearing)) {
+              // Smooth turns while playing; snap instantly when scrubbing.
+              var factor = anim.playing ? 0.3 : 1;
+              anim.heading += angleDiff(anim.heading, bearing - 90) * factor;
+            }
+          }
+          rotateEl(car.getElement().querySelector('.car-body'), anim.heading);
+          var lbl = animLabel(p);
+          labelMain.textContent = lbl.main;
+          labelSub.textContent = lbl.sub;
+          if (!anim.dragging) slider.value = Math.round(anim.current / anim.max * 1000);
+        }
+        var rafId = null;
+        function frame(now) {
+          if (!anim.playing) { rafId = null; return; }
+          if (anim.lastFrame === null) anim.lastFrame = now;
+          var dt = (now - anim.lastFrame) / 1000;
+          anim.lastFrame = now;
+          anim.current += dt * stepPerSec();
+          if (anim.current >= anim.max) {
+            anim.current = anim.max;
+            anim.playing = false;
+            playBtn.textContent = '▶';
+          }
+          syncAnim();
+          rafId = requestAnimationFrame(frame);
+        }
+        playBtn.addEventListener('click', function () {
+          anim.playing = !anim.playing;
+          playBtn.textContent = anim.playing ? '⏸' : '▶';
+          if (anim.playing) {
+            if (anim.current >= anim.max) anim.current = 0;
+            anim.lastFrame = null;
+            rafId = requestAnimationFrame(frame);
+          }
+        });
+        speedSel.addEventListener('change', function () { anim.pct = parseFloat(speedSel.value); });
+        slider.addEventListener('input', function () {
+          anim.dragging = true;
+          anim.current = slider.value / 1000 * anim.max;
+          syncAnim();
+          anim.dragging = false;
+        });
+        syncAnim();
+      }
 
       if (bounds.length) {
         map.fitBounds(L.latLngBounds(bounds), { padding: [40, 40], maxZoom: 14 });

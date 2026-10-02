@@ -7,13 +7,15 @@ import httpx
 import polyline
 import pytest
 
-from route_recap.core.models import Waypoint
+from route_recap.core.models import RouteSegment, Waypoint
 from route_recap.core.router import (
     DEFAULT_OSRM_URL,
     GoogleRoutesProvider,
     OSRMProvider,
+    RouteResult,
     RoutingError,
     _chunks,
+    _hybrid_merge,
     compute_route,
     reverse_geocode,
 )
@@ -143,11 +145,167 @@ def test_google_offroad_points_excluded_from_route():
     finally:
         provider.close()
 
-    # The off-road middle point is excluded from the route but reported.
+    # Single snapped points form runs of length 1, which Google cannot route
+    # on their own — the middle point is off-road, and the route is empty
+    # (the orchestration bridges/falls back at a higher level).
     assert result.off_road_indices == [1]
-    assert len(result.segments) == 1
-    assert (result.segments[0].start_index, result.segments[0].end_index) == (0, 2)
-    assert result.segments[0].distance_m == 2000.0  # routed 0 → 2 directly
+    assert result.segments == []
+
+
+def _osrm_ok_handler():
+    """OSRM mock that routes any coordinate list with a straight polyline."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "route/v1/driving" in str(request.url)
+        coords = request.url.path.split("/driving/")[1].split(";")
+        pts = [[float(c.split(",")[0]), float(c.split(",")[1])] for c in coords]
+        return httpx.Response(
+            200,
+            json={
+                "code": "Ok",
+                "routes": [
+                    {
+                        "geometry": {"type": "LineString", "coordinates": pts},
+                        "distance": 1000.0 * (len(pts) - 1),
+                        "duration": 100.0 * (len(pts) - 1),
+                    }
+                ],
+            },
+        )
+
+    return handler
+
+
+def test_hybrid_merge_bridges_unsnapped_run():
+    """A consecutive run Google can't snap is routed via OSRM and merged."""
+    points = [wp(i) for i in range(8)]
+    google_segments = [
+        RouteSegment(start_index=0, end_index=2, encoded_polyline="a", distance_m=1000, duration_s=60),
+        RouteSegment(start_index=6, end_index=7, encoded_polyline="b", distance_m=1000, duration_s=60),
+    ]
+    google_result = RouteResult(
+        provider="google", segments=google_segments, off_road_indices=[3, 4, 5]
+    )
+    osrm = OSRMProvider(client=make_client(_osrm_ok_handler()))
+    try:
+        merged, isolated = _hybrid_merge(points, google_result, osrm)
+    finally:
+        osrm.close()
+
+    assert isolated == []  # the run was bridged, nothing left off-road
+    # The bridge includes boundary points 2 and 6, so the route is continuous
+    # and no distance is double-counted.
+    assert [(s.start_index, s.end_index) for s in merged] == [
+        (0, 2),
+        (2, 6),  # OSRM bridge: 2 → 3 → 4 → 5 → 6
+        (6, 7),
+    ]
+
+
+def test_hybrid_merge_keeps_isolated_points_off_road():
+    """Single unsnapped points (true POIs) stay out of the route."""
+    points = [wp(i) for i in range(6)]
+    google_segments = [
+        RouteSegment(start_index=0, end_index=2, encoded_polyline="a", distance_m=1000, duration_s=60),
+        RouteSegment(start_index=4, end_index=5, encoded_polyline="b", distance_m=1000, duration_s=60),
+    ]
+    google_result = RouteResult(
+        provider="google", segments=google_segments, off_road_indices=[1, 3]
+    )
+    osrm = OSRMProvider(client=make_client(_osrm_ok_handler()))
+    try:
+        merged, isolated = _hybrid_merge(points, google_result, osrm)
+    finally:
+        osrm.close()
+
+    assert isolated == [1, 3]
+    assert [(s.start_index, s.end_index) for s in merged] == [(0, 2), (4, 5)]
+
+
+def test_hybrid_merge_osrm_failure_keeps_run_off_road():
+    """If OSRM can't bridge a run either, its points become off-road POIs."""
+    points = [wp(i) for i in range(6)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="osrm down")
+
+    google_segments = [
+        RouteSegment(start_index=0, end_index=1, encoded_polyline="a", distance_m=1000, duration_s=60),
+        RouteSegment(start_index=4, end_index=5, encoded_polyline="b", distance_m=1000, duration_s=60),
+    ]
+    google_result = RouteResult(
+        provider="google", segments=google_segments, off_road_indices=[2, 3]
+    )
+    osrm = OSRMProvider(client=make_client(handler))
+    try:
+        merged, isolated = _hybrid_merge(points, google_result, osrm)
+    finally:
+        osrm.close()
+
+    assert isolated == [2, 3]
+    assert [(s.start_index, s.end_index) for s in merged] == [(0, 1), (4, 5)]
+
+
+def test_compute_route_hybrid_provider():
+    """End-to-end: Google snaps some points, OSRM bridges the rest."""
+    points = [wp(i) for i in range(6)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "snapToRoads" in url:
+            # Google only has roads for indices 0,1 and 4,5
+            return httpx.Response(
+                200,
+                json={
+                    "snappedPoints": [
+                        {
+                            "location": {"latitude": 63.4, "longitude": -19.0},
+                            "originalIndex": 0,
+                        },
+                        {
+                            "location": {"latitude": 63.401, "longitude": -18.999},
+                            "originalIndex": 1,
+                        },
+                        {
+                            "location": {"latitude": 63.404, "longitude": -18.996},
+                            "originalIndex": 4,
+                        },
+                        {
+                            "location": {"latitude": 63.405, "longitude": -18.995},
+                            "originalIndex": 5,
+                        },
+                    ]
+                },
+            )
+        if "computeRoutes" in url:
+            body = json.loads(request.content)
+            n = 1 + len(body.get("intermediates", [])) + 1
+            return httpx.Response(
+                200,
+                json={
+                    "routes": [
+                        {
+                            "distanceMeters": n * 1000,
+                            "duration": "600s",
+                            "polyline": {"encodedPolyline": polyline.encode(
+                                [(63.4 + j * 0.001, -19.0 + j * 0.001) for j in range(n)]
+                            )},
+                        }
+                    ]
+                },
+            )
+        return _osrm_ok_handler()(request)
+
+    result = compute_route(points, api_key="test-key", client=make_client(handler))
+    assert result.provider == "google+osrm"
+    assert result.off_road_indices == []  # the fjord run was bridged
+    # Google routes each snapped run separately (0→1, 4→5); OSRM bridges the
+    # unsnapped run with its boundary points (1→2→3→4). No double-counting.
+    assert [(s.start_index, s.end_index) for s in result.segments] == [
+        (0, 1),
+        (1, 4),
+        (4, 5),
+    ]
 
 
 def test_google_routes_api_error_raises():
@@ -336,6 +494,39 @@ def test_reverse_geocode_detail_google_component():
         63.532, -19.511, api_key="k", client=make_client(handler)
     )
     assert detail["name"] == "Skógafoss"
+
+
+def test_reverse_geocode_detail_skips_plus_codes():
+    """Remote locations return Plus Codes — they must not become the name."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "formatted_address": "9CP77234+XG, Vesturbyggð, Iceland",
+                        "address_components": [
+                            {
+                                "long_name": "9CP77234+XG",
+                                "types": ["plus_code"],
+                            },
+                            {
+                                "long_name": "Vesturbyggð",
+                                "types": ["locality"],
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+
+    from route_recap.core.router import reverse_geocode_detail
+
+    detail = reverse_geocode_detail(
+        65.5, -23.9, api_key="k", client=make_client(handler)
+    )
+    assert detail["name"] == "Vesturbyggð"
 
 
 def test_osrm_default_base_url():

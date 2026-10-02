@@ -237,7 +237,13 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
             if route_result.off_road_indices:
                 console.print(
                     f"[dim]{len(route_result.off_road_indices)} waypoint(s) too far "
-                    f"from roads — kept as separate POIs.[/dim]"
+                    f"from any road — kept as separate POIs.[/dim]"
+                )
+            if route_result.provider == "google+osrm":
+                console.print(
+                    "[dim]Some waypoints were on roads Google lacks — "
+                    "bridged via OSRM (OpenStreetMap) so the route stays "
+                    "continuous.[/dim]"
                 )
         except RoutingError as exc:
             console.print(f"[yellow]Routing failed: {exc}[/yellow]")

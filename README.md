@@ -22,9 +22,10 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
    into named landmarks.
 5. **Reconstructs the driven route** snapped to real roads using Google
    (Snap to Roads + Routes API) with automatic OSRM fallback when no API key
-   is configured. Waypoints too far from any road (viewpoints, trailheads,
-   parking lots) are kept as **separate off-road POIs** on the map rather
-   than forced into the route.
+   is configured. Where Google's road network is incomplete (gravel side
+   roads, fjord viewpoints), the unsnapped runs are **bridged via OSRM**
+   (OpenStreetMap data) so the route stays continuous; only truly isolated
+   points become **off-road POIs** on the map.
 6. **Builds a static report** — one `index.html` with the trip data embedded,
    a Leaflet map with the route, numbered stop pins and off-road POIs, plus a
    `summary.json` sidecar. Trip media is hardlinked into the report folder
@@ -131,10 +132,11 @@ flowchart TD
 | `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes and reverse-geocodes. |
 | `packages/generator` | Turns the final trip summary into `index.html` and `summary.json`; stages media hardlinks and thumbnails. |
 
-**Routing detail:** when Google routing succeeds, only road-snapped waypoints
-form the road route; points Google cannot snap are preserved as separate
-off-road POIs. If the Google key is absent or the Google route fails, OSRM is
-used as a fallback; OSRM does not classify off-road points. If routing is
+**Routing detail:** when Google routing succeeds, road-snapped waypoints form
+the road route. Consecutive waypoints Google cannot snap (roads it lacks in
+remote areas) are bridged via OSRM so the route stays continuous; only
+isolated single points become off-road POIs. If the Google key is absent or
+the Google route fails, OSRM is used for the whole route. If routing is
 unavailable, the report can still be generated without a route line.
 
 **Keys and network:** `GOOGLE_MAPS_API_KEY` is used by the local pipeline and
