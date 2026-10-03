@@ -144,12 +144,34 @@ def test_build_html_photos_open_in_a_lightbox(tmp_path):
     assert '<a class="vid"' in strip_src
     assert '<a href="' not in strip_src  # images are buttons, never navigation
 
-    # A location with more photos than the strip limit gets a "+N" opener, and
-    # the full list is registered so the lightbox can show the rest.
-    assert "photoStrips.push(images)" in html
+    # A location with more photos than the strip limit gets a "+N" opener.
     assert "photo-more" in html
-    # Keyboard and swipe navigation.
+    # The lightbox browses ONE trip-ordered gallery, so swiping continues into
+    # neighbouring points instead of stopping at the end of a location.
+    assert "allPhotos" in html
+    assert "photoIndexOf" in html
+    assert "buildGallery" in html
+    # Keyboard, swipe, and wrap-around navigation.
     assert "ArrowLeft" in html and "ArrowRight" in html
+    assert "% allPhotos.length" in html
+
+
+def test_build_html_supports_waypoint_names(tmp_path):
+    """Waypoints show the road/label instead of a bare "Waypoint"."""
+    summary = _summary(day_indexes=[0])
+    summary.waypoints[0].name = "Austurvegur"
+    summary.waypoints[1].road = "Route 1"
+    html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
+
+    data = json.loads(
+        (tmp_path / "trip" / "summary.json").read_text(encoding="utf-8")
+    )
+    assert data["waypoints"][0]["name"] == "Austurvegur"
+    assert data["waypoints"][1]["road"] == "Route 1"
+    # Mid-drive the road wins; for an off-road spot the landmark does.
+    assert "function wpName" in html
+    assert "wp.road || wp.name" in html
+    assert "wp.name || wp.road" in html
 
 
 def test_build_html_supports_ios_safari(tmp_path):

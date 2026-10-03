@@ -526,7 +526,69 @@ def test_reverse_geocode_google_first():
     assert addr == "Skógafoss, Iceland"
 
 
-def test_reverse_geocode_nominatim_user_agent():
+def test_google_result_rejects_plus_code_names():
+    """Remote places come back as Plus Codes; those must never be the label."""
+    from route_recap.core.router import _google_result, _looks_like_plus_code
+
+    assert _looks_like_plus_code("9CP22XMR+G9")
+    assert _looks_like_plus_code("99MVR9CV+3J")
+    assert not _looks_like_plus_code("Hringvegur")
+    assert not _looks_like_plus_code(None)
+
+    # A component typed locality whose value is a Plus Code is skipped, and the
+    # fallback picks the first usable address part instead.
+    result = _google_result(
+        {
+            "formatted_address": "9CP22XMR+G9, Iceland",
+            "address_components": [
+                {"long_name": "9CP22XMR+G9", "types": ["locality"]},
+                {"long_name": "Iceland", "types": ["country"]},
+            ],
+        }
+    )
+    assert result["name"] == "Iceland"
+
+    # A real road name is kept.
+    result = _google_result(
+        {
+            "formatted_address": "Hringvegur, Iceland",
+            "address_components": [
+                {"long_name": "Hringvegur", "types": ["route"]},
+                {"long_name": "Iceland", "types": ["country"]},
+            ],
+        }
+    )
+    assert result["road"] == "Hringvegur"
+    assert result["name"] == "Hringvegur"
+
+
+def test_reverse_geocode_detail_returns_road():
+    """The road is needed to label mid-drive waypoints."""
+    from route_recap.core.router import reverse_geocode_detail
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "OK",
+                "results": [
+                    {
+                        "formatted_address": "Hringvegur, 861, Iceland",
+                        "address_components": [
+                            {"long_name": "Hringvegur", "types": ["route"]},
+                            {"long_name": "Iceland", "types": ["country"]},
+                        ],
+                    }
+                ],
+            },
+        )
+
+    detail = reverse_geocode_detail(63.5, -19.5, api_key="k", client=make_client(handler))
+    assert detail is not None
+    assert detail["road"] == "Hringvegur"
+
+
+
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -269,13 +269,39 @@ Google Geocoding first (with `address_components`), Nominatim second
   `_GOOGLE_NAME_TYPES` prefers `establishment` → `point_of_interest` →
   `natural_feature` → `locality` → … → `route`; `_NOMINATIM_NAME_KEYS` prefers
   `tourism` → `attraction` → `amenity` → `village` → `town` → … → `county`.
-- Google `plus_code` components are skipped and names containing `+` are
-  rejected — Plus Codes make terrible labels.
+- The result also carries **`road`** (the `route` component), which is what
+  labels mid-drive waypoints — see §3.7.
+- **Plus Codes are rejected.** Remote places come back as `9CP22XMR+G9`;
+  `_looks_like_plus_code` filters those out of both the name and the road, and
+  the address fallback skips them. A point with nothing usable gets no label,
+  which the report renders as "On the road" rather than gibberish.
 - Nominatim's policy caps usage at ~1 request/second, so that path sleeps 1.1 s
   between stops. The Google path parallelises instead (6 workers,
   `_GEOCODE_WORKERS`).
 - API keys are redacted from error text by `_sanitize_message`, because httpx
   embeds the full request URL (including `key=…`) in its exceptions.
+
+### 3.6.1 Naming waypoints — `cli/main.py`
+
+Stops are few, waypoints are many (748 vs 50 on the reference trip), so naming
+waypoints needs a different strategy:
+
+- **Proximity reuse.** `_plan_waypoint_queries` groups waypoints within
+  `_LABEL_REUSE_M` (750 m) of each other; only the first of each group is
+  queried and the rest inherit its label. Waypoints sit every few hundred
+  metres and a road name holds for kilometres, so this cuts requests
+  dramatically for the same output.
+- **Already-labelled points are skipped**, so re-running a trip against an
+  existing `summary.json` costs nothing.
+- **Nominatim is capped** at `_NOMINATIM_WAYPOINT_CAP` (120) groups, because at
+  its ~1 request/second policy naming every waypoint would take many minutes
+  and feel broken. The shortfall is reported to the user.
+- Waypoint labels prefer the **road** (`wp.road || wp.name`); for an off-road
+  spot the **landmark** wins instead, since a road is meaningless there.
+- Disable with `--no-waypoint-names`, or `TripConfig.geocode_waypoints`.
+
+Names are persisted into `summary.json`, so a later `build_html` / re-render
+reuses them.
 
 ### 3.7 Day assignment — `clustering.assign_days`
 
@@ -406,17 +432,28 @@ or 3 (waypoints) so a popup stays a reasonable size. Thumbnails are `<button>`s,
 not links — clicking one opens an **in-page lightbox**, so the report never
 navigates away.
 
-- `assetStrip(files, limit)` registers each strip's **complete** photo list in
-  the module-level `photoStrips` array and returns the first `limit` of them.
-  When photos remain it appends a **`+N`** button whose index points at the
-  first hidden photo, so the lightbox can page through the rest.
+**One gallery for the whole trip.** Rather than a separate viewer per location,
+`buildGallery()` assembles a single `allPhotos` array in **trip order** — stops
+first (their labels are richer), then every waypoint — deduplicated by source
+file, with `photoIndexOf` mapping each file to its index. Each strip therefore
+only needs to emit global indices, and the lightbox walks the whole array. That
+is what lets a swipe run past the end of one stop straight into the next place
+instead of stopping, which is the behaviour that makes browsing feel continuous.
+
+- Each strip renders its first `limit` photos plus a **`+N`** button. The button
+  carries the global index of the **first hidden photo** — verified across all
+  201 strips on the reference trip — so it drops you exactly where the strip
+  left off rather than at the start.
+- A caption shows the current photo's place (road, stop name, or landmark) and
+  time, and the counter is global (`2077 / 2122`).
 - Click handling is delegated on `document` (popups are created by Leaflet long
   after the handlers are registered) and calls `stopPropagation` so the popup
   stays open.
 - The lightbox is built lazily on first use: close via the × button, the
   backdrop, or Esc; navigate via the arrow buttons, ← / →, or a horizontal
-  swipe. `document.body.style.overflow` is locked while it is open, and the
-  `src` is cleared on close so full-resolution images are released promptly.
+  swipe. Navigation wraps around. `document.body.style.overflow` is locked
+  while it is open, and the `src` is cleared on close so full-resolution images
+  are released promptly.
 - **Source selection:** `a.url || a.thumb`, with an `onerror` fallback back to
   `thumb`. In the folder report `url` is `media/…`, so the lightbox shows the
   **full-resolution original** (4,284×5,712 on the reference trip) while strips
@@ -561,6 +598,7 @@ Thresholds live on `TripConfig` and can be overridden from the CLI:
 | `filter_outliers` | `true` | `--no-filter-outliers` to disable. |
 | `stage_media` | `true` | `--no-media` to skip hardlinks/thumbnails. |
 | `geocode_stops` | `true` | `--no-geocode` to skip reverse geocoding. |
+| `geocode_waypoints` | `true` | `--no-waypoint-names` to skip road labels for waypoints. |
 
 Provider behaviour summary:
 

@@ -37,6 +37,18 @@ _OSRM_WAYPOINTS = 100  # conservative chunk for the public demo server
 
 _KEY_REDACT_RE = re.compile(r"key=[^&\s]+", re.IGNORECASE)
 
+#: Google returns a Plus Code (e.g. "9CP22XMR+G9") as the formatted address for
+#: remote places with no real locality. They read as gibberish, so they are
+#: never used as a label.
+_PLUS_CODE_RE = re.compile(r"^[0-9A-Z]{4,}\+[0-9A-Z]{2,}$", re.IGNORECASE)
+
+
+def _looks_like_plus_code(text: object) -> bool:
+    if not text:
+        return False
+    s = str(text).strip()
+    return "+" in s or bool(_PLUS_CODE_RE.match(s))
+
 
 def _sanitize_message(message: str) -> str:
     """Redact API keys from error/log text (e.g. request URLs)."""
@@ -596,10 +608,13 @@ def reverse_geocode_detail(
     user_agent: str | None = None,
     client: httpx.Client | None = None,
 ) -> dict[str, str] | None:
-    """Reverse geocode and return ``{"name": ..., "address": ...}``.
+    """Reverse geocode and return ``{"name", "address", "road"}``.
 
     ``name`` is the most human-friendly component (landmark, town, or
-    village); ``address`` is the full formatted address.
+    village); ``address`` is the full formatted address; ``road`` is the road
+    or street name when the point sits on one. The road is what makes a good
+    label for a mid-drive waypoint, where the interesting thing is the road
+    you were on rather than the nearest landmark.
     """
     key = api_key if api_key is not None else os.getenv("GOOGLE_MAPS_API_KEY") or ""
     ua = (
@@ -645,6 +660,7 @@ def reverse_geocode_detail(
         return {
             "name": name or data["display_name"].split(",")[0],
             "address": data["display_name"],
+            "road": address.get("road") or "",
         }
     except httpx.HTTPError as exc:
         logger.warning(
@@ -662,18 +678,24 @@ def reverse_geocode_detail(
 def _google_result(result: dict) -> dict[str, str]:
     address = result.get("formatted_address", "")
     name: str | None = None
+    road = ""
     for component in result.get("address_components", []):
         types = component.get("types", [])
         if "plus_code" in types:
-            continue  # skip Plus Codes like "9CP77234+XG"
+            continue
+        long_name = component.get("long_name") or ""
+        if not road and "route" in types and not _looks_like_plus_code(long_name):
+            road = long_name
         if any(t in _GOOGLE_NAME_TYPES for t in types):
-            name = component.get("long_name")
+            if _looks_like_plus_code(long_name):
+                continue  # useless as a label — keep looking
+            name = long_name
             break
     if name is None or name.isdigit():
-        # Fall back to the first non-Plus-Code part of the address.
+        # Fall back to the first usable part of the formatted address.
         parts = [p.strip() for p in address.split(",") if p.strip()]
-        name = next((p for p in parts if "+" not in p), parts[0] if parts else None)
-    return {"name": name, "address": address}
+        name = next((p for p in parts if not _looks_like_plus_code(p)), None)
+    return {"name": name, "address": address, "road": road}
 
 
 # ------------------------------------------------------------------- helpers

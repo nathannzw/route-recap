@@ -251,6 +251,13 @@
       bottom: calc(14px + env(safe-area-inset-bottom));
       color: rgba(255, 255, 255, 0.85); font-size: 0.78rem;
     }
+    .lightbox-caption {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: calc(34px + env(safe-area-inset-bottom));
+      color: #fff; font-size: 0.85rem; font-weight: 600;
+      max-width: 80vw; text-align: center; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
     /* legend */
     .legend {
       position: absolute;
@@ -514,33 +521,65 @@
         return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
       var assets = data.assets || {};
-      // ---- photo strips + lightbox ----
-      // Every strip registers its full photo list here, keyed by an id, so the
-      // lightbox can page through *all* of a location's photos even though the
-      // popup only shows the first few thumbnails.
-      var photoStrips = [];
+      // Mid-drive, the road you were on reads better than the nearest landmark;
+      // for an off-road spot the landmark is the meaningful one.
+      function wpName(wp) {
+        return wp.off_road
+          ? (wp.name || wp.road || null)
+          : (wp.road || wp.name || null);
+      }
+
+      // ---- one trip-ordered gallery of every photo ----
+      // Strips are per-location, but the lightbox browses this single list, so
+      // swiping past the last photo at a place continues into the next place
+      // along the route instead of stopping dead.
+      var allPhotos = [];    // [{key, asset, place, when}]
+      var photoIndexOf = {}; // source-file key -> index in allPhotos
+      (function buildGallery() {
+        function add(files, place, when) {
+          (files || []).forEach(function (f) {
+            if (photoIndexOf[f] !== undefined) return;  // already indexed
+            var a = assets[f];
+            if (!a || !(a.thumb || a.url)) return;      // skip thumbs-less video
+            photoIndexOf[f] = allPhotos.length;
+            allPhotos.push({ key: f, asset: a, place: place, when: when });
+          });
+        }
+        // Stops first so their richer label wins, then every waypoint in
+        // trip order (which is what makes the gallery chronological).
+        (data.stops || []).forEach(function (s, i) {
+          add(s.source_files, s.name || ('Stop ' + (i + 1)), s.arrived_at);
+        });
+        (data.waypoints || []).forEach(function (wp) {
+          var label = wpName(wp);
+          if (!label) label = wp.off_road ? 'Off-road spot' : 'On the road';
+          add(wp.source_files, label, wp.timestamp);
+        });
+      })();
+
       function assetStrip(files, limit) {
-        var images = [], videos = [];
+        var idxs = [], videos = [];
         (files || []).forEach(function (f) {
           var a = assets[f];
           if (!a) return;
           if (a.kind === 'video' && !a.thumb) videos.push({ asset: a, file: f });
-          else if (a.thumb || a.url) images.push(a);
+          else if (photoIndexOf[f] !== undefined) idxs.push(photoIndexOf[f]);
         });
-        if (!images.length && !videos.length) return '';
+        if (!idxs.length && !videos.length) return '';
 
-        var id = photoStrips.length;
-        photoStrips.push(images);
-        var shown = limit ? images.slice(0, limit) : images;
+        var shown = limit ? idxs.slice(0, limit) : idxs;
         var html = '';
-        shown.forEach(function (a, i) {
-          html += '<button type="button" class="photo-open" data-s="' + id + '" data-i="' + i + '"'
-            + ' title="Open photo"><img src="' + esc(a.thumb || a.url) + '" loading="lazy" alt=""></button>';
+        shown.forEach(function (globalIndex) {
+          var p = allPhotos[globalIndex];
+          html += '<button type="button" class="photo-open" data-g="' + globalIndex + '"'
+            + ' title="' + esc(p.place) + '"><img src="' + esc(p.asset.thumb || p.asset.url)
+            + '" loading="lazy" alt=""></button>';
         });
-        var hidden = images.length - shown.length;
+        var hidden = idxs.length - shown.length;
         if (hidden > 0) {
-          html += '<button type="button" class="photo-open photo-more" data-s="' + id + '"'
-            + ' data-i="' + shown.length + '" title="Show all ' + images.length + ' photos">'
+          // Opens at the first photo the strip had to leave out.
+          html += '<button type="button" class="photo-open photo-more" data-g="'
+            + idxs[shown.length] + '" title="Show all ' + idxs.length + ' photos">'
             + '+' + hidden + '</button>';
         }
         videos.forEach(function (v) {
@@ -550,8 +589,8 @@
         return '<div class="photo-strip">' + html + '</div>';
       }
 
-      var lbEl = null, lbImg = null, lbCount = null;
-      var lbStrip = 0, lbIndex = 0, lbAsset = null;
+      var lbEl = null, lbImg = null, lbCount = null, lbCaption = null;
+      var lbIndex = 0, lbAsset = null;
 
       function lightboxEl() {
         if (lbEl) return lbEl;
@@ -563,10 +602,12 @@
           + '<button type="button" class="lightbox-prev" aria-label="Previous photo">‹</button>'
           + '<img alt="">'
           + '<button type="button" class="lightbox-next" aria-label="Next photo">›</button>'
+          + '<div class="lightbox-caption"></div>'
           + '<div class="lightbox-count"></div>';
         document.body.appendChild(lbEl);
         lbImg = lbEl.querySelector('img');
         lbCount = lbEl.querySelector('.lightbox-count');
+        lbCaption = lbEl.querySelector('.lightbox-caption');
         // Full-resolution originals only exist in folder reports; in a
         // single-file report ``url`` is empty and we show the embedded copy.
         lbImg.addEventListener('error', function () {
@@ -600,20 +641,20 @@
       }
 
       function showLightboxPhoto() {
-        var list = photoStrips[lbStrip] || [];
-        var a = list[lbIndex];
-        if (!a) return;
-        lbAsset = a;
-        lbImg.src = a.url || a.thumb;
-        lbCount.textContent = (lbIndex + 1) + ' / ' + list.length;
-        var many = list.length > 1;
+        var p = allPhotos[lbIndex];
+        if (!p) return;
+        lbAsset = p.asset;
+        lbImg.src = p.asset.url || p.asset.thumb;
+        lbCount.textContent = (lbIndex + 1) + ' / ' + allPhotos.length;
+        var when = p.when ? ' · ' + fmtTime(p.when) : '';
+        lbCaption.textContent = p.place + when;
+        var many = allPhotos.length > 1;
         lbEl.querySelector('.lightbox-prev').hidden = !many;
         lbEl.querySelector('.lightbox-next').hidden = !many;
       }
-      function openLightbox(strip, index) {
+      function openLightbox(index) {
         lightboxEl();
-        lbStrip = strip;
-        lbIndex = index;
+        lbIndex = Math.max(0, Math.min(index, allPhotos.length - 1));
         showLightboxPhoto();
         lbEl.hidden = false;
         document.body.style.overflow = 'hidden';
@@ -625,9 +666,9 @@
         document.body.style.overflow = '';
       }
       function stepPhoto(delta) {
-        var list = photoStrips[lbStrip] || [];
-        if (list.length < 2) return;
-        lbIndex = (lbIndex + delta + list.length) % list.length;
+        if (allPhotos.length < 2) return;
+        // Wrap around: the gallery is the whole trip, ordered along the route.
+        lbIndex = (lbIndex + delta + allPhotos.length) % allPhotos.length;
         showLightboxPhoto();
       }
       // Delegated so it also works for popups created later by Leaflet.
@@ -636,10 +677,7 @@
         if (!btn) return;
         e.preventDefault();
         e.stopPropagation();  // keep the Leaflet popup open
-        openLightbox(
-          parseInt(btn.getAttribute('data-s'), 10),
-          parseInt(btn.getAttribute('data-i'), 10)
-        );
+        openLightbox(parseInt(btn.getAttribute('data-g'), 10));
       });
 
       var map = L.map('map', { scrollWheelZoom: true }).setView([20, 0], 2);
@@ -787,20 +825,21 @@
         if (wp.is_stop) return; // stops get numbered pins
         if (wp.off_road) {
           var pop = '<div class="stop-popup"><h3>Off-road spot</h3>';
+          if (wpName(wp)) pop += '<p class="addr">' + esc(wpName(wp)) + '</p>';
           if (wp.timestamp) pop += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
           pop += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
           pop += assetStrip(wp.source_files, 4) + '</div>';
           addMarker(L.marker([wp.latitude, wp.longitude], {
-            icon: poiIcon('🏔️', 'offroad'), title: 'Off-road spot'
+            icon: poiIcon('🏔️', 'offroad'), title: wpName(wp) || 'Off-road spot'
           }).bindPopup(pop), false);
           return;
         }
-        var pop2 = '<div class="stop-popup"><h3>Waypoint</h3>';
+        var pop2 = '<div class="stop-popup"><h3>' + (wpName(wp) ? esc(wpName(wp)) : 'Waypoint') + '</h3>';
         if (wp.timestamp) pop2 += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
         pop2 += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
         pop2 += assetStrip(wp.source_files, 3) + '</div>';
         addMarker(L.marker([wp.latitude, wp.longitude], {
-          icon: poiIcon('📷'), title: 'Waypoint'
+          icon: poiIcon('📷'), title: wpName(wp) || 'Waypoint'
         }).bindPopup(pop2), false);
       });
 

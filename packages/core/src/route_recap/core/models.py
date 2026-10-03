@@ -79,6 +79,11 @@ class Waypoint(BaseModel):
     source_files: list[Path] = Field(default_factory=list)
     is_stop: bool = False
     stop_index: int | None = None  # index into TripSummary.stops when is_stop
+    #: Reverse-geocoded label for this point. Stops get the landmark/town name;
+    #: waypoints get the road they are on, which reads better mid-drive.
+    name: str | None = None
+    #: Road/street name, when the point sits on one.
+    road: str | None = None
     #: True when the point was too far from any road to be part of the
     #: route (e.g. viewpoints, trailheads) — rendered as a separate POI.
     off_road: bool = False
@@ -149,6 +154,9 @@ class TripConfig(BaseModel):
     stop_max_distance_m: float = Field(default=500.0, ge=0)
     overnight_hours: int = Field(default=6, ge=2)
     geocode_stops: bool = True
+    #: Reverse-geocode waypoints too, so a mid-drive point is labelled with the
+    #: road it is on instead of just "Waypoint".
+    geocode_waypoints: bool = True
     #: Drop waypoints that look like a different trip (home/airport/foreign
     #: photos) — timeline jumps at flight-like speeds.
     filter_outliers: bool = True

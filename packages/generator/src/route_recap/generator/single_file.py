@@ -22,13 +22,16 @@ import base64
 import io
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 import httpx
 
 from route_recap.core.models import TripSummary
 
 from .html_builder import _render_html
+from .media_assets import THUMB_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +165,54 @@ def _encode_photo(path: Path, size: int, quality: int) -> str | None:
 
         register_heif_opener()
         with Image.open(path) as img:
+            # Ask libjpeg to decode straight to a reduced size (DCT scaling)
+            # instead of decoding a full 12 MP frame and then shrinking it.
+            # Without this, embedding at a high --photo-size reads every
+            # original at full resolution: fine for a few files, but minutes to
+            # hours across thousands of photos. Files that don't support draft
+            # simply ignore it.
+            try:
+                img.draft("RGB", (size, size))
+            except Exception:  # noqa: BLE001 - draft is a pure optimisation
+                pass
             img = ImageOps.exif_transpose(img)
-            img.thumbnail((size, size))
+            img.thumbnail((size, size), Image.Resampling.LANCZOS)
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=quality, optimize=True)
+            # No ``optimize=True``: it re-runs the Huffman pass several times for
+            # a ~2% size saving, which is invisible next to the cost of doing it
+            # across thousands of photos.
+            img.save(buf, "JPEG", quality=quality)
     except Exception:  # noqa: BLE001 - one bad photo must not fail the export
         logger.debug("could not embed %s", path, exc_info=True)
         return None
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _pick_source(
+    asset: dict, key: str, output_dir: Path, size: int
+) -> Path | None:
+    """Choose the file to encode an embedded photo from.
+
+    The staged ``thumbs/`` are capped at :data:`THUMB_SIZE` and Pillow's
+    ``thumbnail()`` never upscales, so embedding *from* a thumbnail silently
+    caps sharpness at that size no matter how large ``--photo-size`` is. For a
+    small embed the thumbnail is a cheap shortcut; past it we must go back to
+    the original.
+    """
+    original = Path(key)
+    thumb_path = None
+    thumb = asset.get("thumb")
+    if thumb:
+        candidate = output_dir / thumb
+        if candidate.is_file():
+            thumb_path = candidate
+    if size <= THUMB_SIZE and thumb_path is not None:
+        return thumb_path
+    if original.is_file():
+        return original
+    return thumb_path
 
 
 def embed_photos(
@@ -182,48 +223,68 @@ def embed_photos(
     max_bytes: int,
     size: int = 200,
     quality: int = 70,
+    workers: int | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[dict[str, dict], int, bool]:
     """Embed small copies of the trip photos into the asset map.
 
     Returns ``(embedded_assets, count, truncated)``. Assets that are not
-    embedded (videos, unreadable files, or anything past the budget) are simply
-    left out, which makes the report skip them instead of rendering a broken
-    link. Existing ``thumbs/`` are preferred over originals so the source
-    images are never re-read.
-    """
-    embedded: dict[str, dict] = {}
-    used = 0
-    truncated = False
+    embedded (videos, unreadable files, or anything past the budget) are left
+    out, which makes the report skip them instead of rendering a broken link.
 
+    Scaling matters here because a trip can carry thousands of photos:
+
+    * encoding runs in a **thread pool** — Pillow releases the GIL for decode
+      and encode, so this is close to a linear speed-up on multiple cores;
+    * once ``max_bytes`` is spent, encoding **stops** instead of grinding
+      through every remaining photo only to discard it;
+    * ``on_progress(done, total)`` lets the caller show progress, since a
+      high-resolution export of a large trip legitimately takes a while.
+    """
+    candidates: list[tuple[str, Path]] = []
     for key in _ordered_sources(summary):
         asset = assets.get(key)
         if not asset or asset.get("kind") != "image":
-            continue  # videos and full-res originals are never embedded
-        source: Path | None = None
-        thumb = asset.get("thumb")
-        if thumb:
-            candidate = output_dir / thumb
-            if candidate.is_file():
-                source = candidate
-        if source is None:
-            candidate = Path(key)
-            if candidate.is_file():
-                source = candidate
-        if source is None:
-            continue
+            continue  # videos are never embedded
+        source = _pick_source(asset, key, output_dir, size)
+        if source is not None:
+            candidates.append((key, source))
 
-        data_uri = _encode_photo(source, size, quality)
-        if data_uri is None:
-            continue
-        if used + len(data_uri) > max_bytes:
-            truncated = True
-            continue  # keep trying smaller remaining files
+    embedded: dict[str, dict] = {}
+    used = 0
+    truncated = False
+    total = len(candidates)
+    if not total:
+        return embedded, 0, False
 
-        used += len(data_uri)
-        # ``url`` is deliberately left empty: pointing both ``url`` and
-        # ``thumb`` at the data URI would store the same base64 payload twice.
-        # The template falls back to ``thumb`` as the link target.
-        embedded[key] = {"url": "", "thumb": data_uri, "kind": "image"}
+    if workers is None:
+        workers = min(8, (os.cpu_count() or 4))
+
+    def work(item: tuple[str, Path]) -> tuple[str, str | None]:
+        key, source = item
+        return key, _encode_photo(source, size, quality)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(work, item) for item in candidates]
+        for i, future in enumerate(futures):
+            if used >= max_bytes:
+                truncated = True
+                for pending in futures[i:]:
+                    pending.cancel()
+                break
+            key, data_uri = future.result()
+            if data_uri is None:
+                continue
+            if used + len(data_uri) > max_bytes:
+                # Skip this one but keep filling from smaller photos.
+                truncated = True
+                continue
+            used += len(data_uri)
+            # ``url`` is deliberately left empty: pointing both ``url`` and
+            # ``thumb`` at the data URI would store the payload twice.
+            embedded[key] = {"url": "", "thumb": data_uri, "kind": "image"}
+            if on_progress is not None:
+                on_progress(len(embedded), total)
 
     return embedded, len(embedded), truncated
 
@@ -240,6 +301,7 @@ def build_single_file(
     thumb_quality: int = 70,
     inline_libraries: bool = True,
     cache_dir: Path | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[Path, list[str]]:
     """Write one shareable ``journey.html`` and return ``(path, warnings)``."""
     output_dir = Path(output_dir)
@@ -256,6 +318,7 @@ def build_single_file(
             max_bytes=int(max_embed_mb * 1024 * 1024),
             size=thumb_size,
             quality=thumb_quality,
+            on_progress=on_progress,
         )
         if truncated:
             warnings.append(

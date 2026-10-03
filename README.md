@@ -21,7 +21,9 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
    single waypoints.
 4. **Detects stops** — places where you paused long enough to matter
    (default 30 min, or 6 h for overnight stays) — and reverse-geocodes them
-   into named landmarks.
+   into named landmarks. **Waypoints get named too**, usually with the road
+   they're on (`Hringvegur`, `Landmannalaugavegur`) so a mid-drive point is
+   labelled rather than just "Waypoint" (opt out with `--no-waypoint-names`).
 5. **Reconstructs the driven route** snapped to real roads using Google
    (Snap to Roads + Routes API) with automatic OSRM fallback when no API key
    is configured. Where Google's road network is incomplete (gravel side
@@ -155,6 +157,9 @@ uv run route-recap --input-dir "C:\Photos\iceland-2026" --name "Iceland Ring Roa
 # Keep waypoints from a different trip (home/airport/foreign photos)
 uv run route-recap --no-filter-outliers
 
+# Skip naming waypoints after the road they're on
+uv run route-recap --no-waypoint-names
+
 # Skip media staging/thumbnails
 uv run route-recap --no-media
 
@@ -212,10 +217,16 @@ size for sharpness, since 2,000+ photos are being embedded. On the reference
 trip: **200 px → 16 MB**, roughly **400 px → 60 MB**.
 
 **Photos:** click any thumbnail and the photo opens **in the page** — no new
-tab. From there swipe (or use ← / →, or the arrows) to browse every photo at
-that place, and press Esc or tap the backdrop to close. A popup only shows the
-first handful of thumbnails, so when a place has more you'll get a **`+N`**
-tile: click it to jump into the full set. Nothing is hidden.
+tab. From there swipe (or use ← / →, or the arrows) to browse photos, and press
+Esc or tap the backdrop to close. A popup only shows the first handful of
+thumbnails, so when a place has more you'll get a **`+N`** tile: click it to
+jump into the rest.
+
+The lightbox browses **one gallery of every photo in the trip, ordered along
+the route** — so swiping past the last photo at a stop keeps going into the
+next place instead of stopping dead. A caption shows where each photo was taken
+(road, stop name, or landmark) and the counter reads `2077 / 2122` for the whole
+trip.
 
 In the **folder** report the lightbox shows the **full-resolution** original
 (`media/`), so you can zoom into a photo properly. In a **single-file** report

@@ -41,6 +41,7 @@ from route_recap.core import (
     deduplicate,
     detect_stops,
     filter_outliers,
+    haversine_m,
     reverse_geocode_detail,
 )
 from route_recap.generator import build_html, build_single_file, stage_media
@@ -98,6 +99,7 @@ def _gather_config(
     no_geocode: bool,
     no_filter_outliers: bool,
     no_media: bool,
+    no_waypoint_names: bool = False,
 ) -> TripConfig:
     trip_name = name or _prompt_name()
     folder = input_dir if input_dir is not None else _prompt_input_dir()
@@ -110,6 +112,7 @@ def _gather_config(
         distance_unit=unit,
         min_stop_minutes=mins,
         geocode_stops=geocode,
+        geocode_waypoints=geocode and not no_waypoint_names,
         filter_outliers=not no_filter_outliers,
         stage_media=not no_media,
     )
@@ -118,6 +121,15 @@ def _gather_config(
 # ------------------------------------------------------------------ pipeline
 
 _GEOCODE_WORKERS = 6  # well under Google Geocoding's default 50 QPS quota
+
+#: Waypoints sit every few hundred metres, so the same road repeats constantly.
+#: Reusing a label within this radius slashes the request count.
+_LABEL_REUSE_M = 750.0
+
+#: Nominatim allows ~1 request/second, so naming every waypoint would take
+#: many minutes. Cap it there and leave the rest unlabelled rather than
+#: making the run feel broken.
+_NOMINATIM_WAYPOINT_CAP = 120
 
 
 def _geocode_apply(stop: Stop, detail: dict | None) -> None:
@@ -153,6 +165,92 @@ def _geocode_stops_parallel(stops: list[Stop]) -> None:
         for future in as_completed(futures):
             i, detail = future.result()
             _geocode_apply(stops[i], detail)
+
+
+def _apply_waypoint_label(waypoint: Waypoint, detail: dict | None) -> None:
+    if not detail:
+        return
+    waypoint.name = detail.get("name") or None
+    waypoint.road = detail.get("road") or None
+
+
+def _label_for(waypoint: Waypoint) -> str | None:
+    """Preferred label for a waypoint: the road, else the broader name."""
+    return waypoint.road or waypoint.name
+
+
+def _plan_waypoint_queries(
+    waypoints: list[Waypoint],
+) -> list[tuple[int, list[int]]]:
+    """Group waypoints so each group needs only one geocode request.
+
+    Waypoints are dense along a route, so the same road covers many of them.
+    The first waypoint in a group is the one queried; the rest inherit its
+    label. Returns ``[(probe_index, [member_indices...]), ...]``.
+    """
+    groups: list[tuple[int, list[int]]] = []
+    for i, wp in enumerate(waypoints):
+        if wp.name or wp.road:
+            continue  # already labelled
+        for probe, members in groups:
+            other = waypoints[probe]
+            if (
+                haversine_m(
+                    wp.latitude, wp.longitude, other.latitude, other.longitude
+                )
+                <= _LABEL_REUSE_M
+            ):
+                members.append(i)
+                break
+        else:
+            groups.append((i, [i]))
+    return groups
+
+
+def _geocode_waypoints(waypoints: list[Waypoint], *, use_nominatim: bool) -> int:
+    """Label waypoints with the road they are on. Returns how many were named."""
+    groups = _plan_waypoint_queries(waypoints)
+    if not groups:
+        return 0
+    truncated = False
+    if use_nominatim:
+        truncated = len(groups) > _NOMINATIM_WAYPOINT_CAP
+        groups = groups[:_NOMINATIM_WAYPOINT_CAP]
+
+    def apply(probe: int, detail: dict | None) -> None:
+        members = next(m for p, m in groups if p == probe)
+        for member in members:
+            _apply_waypoint_label(waypoints[member], detail)
+
+    def work(item: tuple[int, list[int]]) -> tuple[int, dict | None]:
+        probe, _ = item
+        wp = waypoints[probe]
+        try:
+            return probe, reverse_geocode_detail(wp.latitude, wp.longitude)
+        except Exception:
+            logger.exception("waypoint geocoding failed at index %d", probe)
+            return probe, None
+
+    if use_nominatim:
+        for i, (probe, _members) in enumerate(groups):
+            if i:
+                time.sleep(1.1)  # Nominatim usage policy
+            apply(probe, work((probe, []))[1])
+    else:
+        with ThreadPoolExecutor(max_workers=_GEOCODE_WORKERS) as pool:
+            futures = [pool.submit(work, g) for g in groups]
+            for future in as_completed(futures):
+                probe, detail = future.result()
+                apply(probe, detail)
+
+    named = sum(1 for w in waypoints if _label_for(w))
+    if truncated:
+        console.print(
+            f"[dim]Waypoint naming capped at {_NOMINATIM_WAYPOINT_CAP} points "
+            f"(Nominatim's ~1 request/second policy). Cut them off to get every "
+            f"waypoint named.[/dim]"
+        )
+    return named
 
 
 def _run_pipeline(config: TripConfig) -> TripSummary:
@@ -264,6 +362,15 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
             else:
                 _geocode_stops_parallel(stops)
 
+    if config.geocode_waypoints and waypoints:
+        uses_nominatim = not os.getenv("GOOGLE_MAPS_API_KEY")
+        with console.status("Naming waypoints..."):
+            named = _geocode_waypoints(waypoints, use_nominatim=uses_nominatim)
+        if named:
+            console.print(
+                f"[dim]{named} waypoint(s) labelled with the road they're on.[/dim]"
+            )
+
     timestamps = [w.timestamp for w in waypoints if w.timestamp is not None]
     summary = TripSummary(
         trip_name=config.trip_name,
@@ -347,6 +454,7 @@ def _export_single_file(
     inline_libraries: bool,
     photo_size: int,
     photo_quality: int,
+    on_progress=None,
 ) -> tuple[Path, list[str]]:
     """Write the shareable ``journey.html``.
 
@@ -364,6 +472,7 @@ def _export_single_file(
         thumb_size=photo_size,
         thumb_quality=photo_quality,
         inline_libraries=inline_libraries,
+        on_progress=on_progress,
     )
 
 
@@ -390,6 +499,13 @@ def main(
     ] = None,
     no_geocode: Annotated[
         bool, typer.Option("--no-geocode", help="Skip reverse geocoding of stops")
+    ] = False,
+    no_waypoint_names: Annotated[
+        bool,
+        typer.Option(
+            "--no-waypoint-names",
+            help="Skip reverse geocoding waypoints into road names",
+        ),
     ] = False,
     no_filter_outliers: Annotated[
         bool,
@@ -470,7 +586,7 @@ def main(
 
     config = _gather_config(
         name, input_dir, unit, min_stop_minutes, no_geocode, no_filter_outliers,
-        no_media,
+        no_media, no_waypoint_names,
     )
     console.print(
         Panel.fit(
@@ -520,7 +636,12 @@ def main(
         )
 
     if single_file:
-        with console.status("Building a single shareable file..."):
+        # A high --photo-size export of a large trip takes real time, so keep
+        # the user informed instead of appearing to hang.
+        with console.status("Building a single shareable file...") as status:
+            def _progress(done: int, total: int) -> None:
+                status.update(f"Embedding photos {done}/{total}...")
+
             share_path, warnings = _export_single_file(
                 summary,
                 output_dir,
@@ -531,6 +652,7 @@ def main(
                 inline_libraries=inline_libraries,
                 photo_size=photo_size,
                 photo_quality=photo_quality,
+                on_progress=_progress if embed_photos else None,
             )
         for warning in warnings:
             console.print(f"[yellow]{warning}[/yellow]")
