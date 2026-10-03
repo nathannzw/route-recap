@@ -180,11 +180,41 @@
     }
     .legend span { display: flex; align-items: center; gap: 6px; }
     .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex: none; }
-    .legend .swatch.route { width: 14px; height: 4px; border-radius: 2px; background: #1a73e8; }
     .legend .swatch.waypoint { background: #fff; border: 2px solid #1a73e8; width: 8px; height: 8px; }
     .legend .swatch.offroad { background: #fbbf24; border: 2px solid #a16207; width: 8px; height: 8px; }
     .legend .swatch.stop { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
     .legend .swatch.dir { width: 0; height: 0; border: none; border-radius: 0; border-left: 8px solid #0b2f5b; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+    .legend-title { font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .day-toggles { display: flex; flex-wrap: wrap; gap: 4px; max-width: 230px; }
+    .day-toggle {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1px solid #dde4ee; background: #fff; border-radius: 999px;
+      padding: 3px 9px; font-size: 0.7rem; font-weight: 600; color: var(--ink);
+      cursor: pointer; transition: opacity 0.15s ease, background 0.15s ease;
+    }
+    .day-toggle:hover { background: #f2f6fc; }
+    .day-toggle.off { opacity: 0.35; text-decoration: line-through; }
+    .day-toggle .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+    /* share actions */
+    .share-actions { display: flex; gap: 8px; }
+    .share-actions button {
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff; border-radius: 999px; padding: 7px 14px;
+      font-size: 0.78rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .share-actions button:hover { background: rgba(255, 255, 255, 0.25); }
+    /* toast */
+    .toast {
+      position: fixed; left: 50%; bottom: 84px;
+      transform: translateX(-50%) translateY(8px);
+      background: rgba(16, 36, 62, 0.92); color: #fff;
+      padding: 8px 16px; border-radius: 999px; font-size: 0.78rem;
+      z-index: 2000; opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
     /* animation controls */
     .anim-controls {
       position: absolute;
@@ -256,6 +286,10 @@
       .anim-controls { gap: 6px; padding: 6px 8px; }
       .anim-controls input[type="range"] { width: 100px; }
       .anim-controls #anim-label { min-width: 110px; }
+      .anim-controls button { width: 40px; height: 40px; font-size: 1rem; }
+      .share-actions button { padding: 8px 12px; font-size: 0.72rem; }
+      .day-toggles { max-width: 100%; }
+      .legend { max-height: 42vh; overflow-y: auto; }
     }
   </style>
 </head>
@@ -274,13 +308,18 @@
         {% if off_road_count %}<div class="stat"><span class="value">{{ off_road_count }}</span><span class="label">Off-road</span></div>{% endif %}
         <div class="stat"><span class="value">{{ media_count }}</span><span class="label">Media</span></div>
       </div>
+      <div class="share-actions">
+        <button id="btn-share" type="button" title="Copy a link to this report">🔗 Share</button>
+        <button id="btn-download" type="button" title="Download this report as a single HTML file">⬇ Download</button>
+      </div>
     </div>
   </header>
 
   <div class="map-wrap">
     <div id="map"></div>
     <div class="legend">
-      <span><i class="swatch route"></i> Route</span>
+      <span class="legend-title">Days · {{ day_count }}</span>
+      <div class="day-toggles" id="day-toggles"></div>
       <span><i class="swatch waypoint"></i> Waypoint</span>
       <span><i class="swatch offroad"></i> Off-road spot</span>
       <span><i class="swatch stop"></i> Stop</span>
@@ -388,27 +427,76 @@
         return marker;
       }
 
+      // ---- day-colored route rendering ----
+      var DAY_PALETTE = {{ day_palette | tojson }} || ['#d62728', '#2ca02c', '#1f77b4', '#ff7f0e', '#9467bd', '#17becf', '#e377c2', '#8c564b', '#bcbd22', '#393b79', '#843c39', '#637939'];
+      function dayColor(day) {
+        var d = (day == null) ? 0 : day;
+        var p = DAY_PALETTE && DAY_PALETTE.length ? DAY_PALETTE : ['#1a73e8'];
+        return p[((d % p.length) + p.length) % p.length];
+      }
+      var dayCount = 1;
+      var dayLayers = {};   // day -> [polyline, ...]
+      var visibleDays = {}; // day -> bool (default true)
+      (data.segments || []).forEach(function (seg) {
+        var day = (seg.day_index == null) ? 0 : seg.day_index;
+        if (day + 1 > dayCount) dayCount = day + 1;
+        if (visibleDays[day] === undefined) visibleDays[day] = true;
+      });
+      function addDayLayer(day, polyline) {
+        (dayLayers[day] = dayLayers[day] || []).push(polyline);
+      }
+
       var bounds = [];
       var prevSegEnd = null;
-
       (data.segments || []).forEach(function (seg) {
         var coords = decodePolyline(seg.encoded_polyline || '');
         if (!coords.length) return;
+        var day = (seg.day_index == null) ? 0 : seg.day_index;
+        var color = dayColor(day);
         // Connect to the previous segment if it doesn't share an endpoint,
-        // so the route line is continuous (no visible disjoints).
+        // so the route line is continuous (no visible disjoints). The
+        // connector takes the color of the day it leads into.
         if (prevSegEnd) {
           var first = coords[0];
           if (prevSegEnd[0] !== first[0] || prevSegEnd[1] !== first[1]) {
-            L.polyline([prevSegEnd, first], {
-              color: '#1a73e8', weight: 5, opacity: 0.95, dashArray: '4 6'
-            }).addTo(map);
+            addDayLayer(day, L.polyline([prevSegEnd, first], {
+              color: color, weight: 5, opacity: 0.95, dashArray: '4 6'
+            }).addTo(map));
           }
         }
         bounds = bounds.concat(coords);
-        L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.85 }).addTo(map);
-        L.polyline(coords, { color: '#1a73e8', weight: 5, opacity: 0.95 }).addTo(map);
+        addDayLayer(day, L.polyline(coords, { color: '#ffffff', weight: 9, opacity: 0.85 }).addTo(map));
+        addDayLayer(day, L.polyline(coords, { color: color, weight: 5, opacity: 0.95 }).addTo(map));
         prevSegEnd = coords[coords.length - 1];
       });
+
+      // ---- day filter legend ----
+      var dayToggles = document.getElementById('day-toggles');
+      if (dayToggles) {
+        for (var d = 0; d < dayCount; d++) {
+          (function (day) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'day-toggle';
+            btn.title = 'Show / hide Day ' + (day + 1);
+            btn.innerHTML = '<i class="swatch" style="background:' + dayColor(day) + '"></i>Day ' + (day + 1);
+            btn.addEventListener('click', function () {
+              var visible = visibleDays[day] !== false;
+              visibleDays[day] = !visible;
+              btn.classList.toggle('off', !visibleDays[day]);
+              setDayVisible(day, visibleDays[day]);
+            });
+            dayToggles.appendChild(btn);
+          })(d);
+        }
+      }
+      function setDayVisible(day, visible) {
+        (dayLayers[day] || []).forEach(function (p) {
+          if (visible) p.addTo(map); else p.remove();
+        });
+        if (traveledLine) traveledLine.bringToFront();
+        setupAnimation();
+      }
 
       (data.waypoints || []).forEach(function (wp) {
         bounds.push([wp.latitude, wp.longitude]);
@@ -461,6 +549,55 @@
         addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon }).bindPopup(html), true);
       });
 
+      // ---- share & download (self-contained HTML) ----
+      var toastEl = null;
+      function toast(msg) {
+        if (!toastEl) {
+          toastEl = document.createElement('div');
+          toastEl.className = 'toast';
+          document.body.appendChild(toastEl);
+        }
+        toastEl.textContent = msg;
+        toastEl.classList.add('show');
+        clearTimeout(toastEl._t);
+        toastEl._t = setTimeout(function () { toastEl.classList.remove('show'); }, 1600);
+      }
+      function fallbackCopy(text, done) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { toast('Copy failed — copy the address bar URL'); }
+        document.body.removeChild(ta);
+      }
+      var shareBtn = document.getElementById('btn-share');
+      if (shareBtn) {
+        shareBtn.addEventListener('click', function () {
+          var url = location.href;
+          function done() { toast('Link copied — share it anywhere'); }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(done, function () { fallbackCopy(url, done); });
+          } else {
+            fallbackCopy(url, done);
+          }
+        });
+      }
+      var dlBtn = document.getElementById('btn-download');
+      if (dlBtn) {
+        dlBtn.addEventListener('click', function () {
+          var name = (data.trip_name || 'trip').replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-') + '.html';
+          var a = document.createElement('a');
+          a.href = location.href;
+          a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          toast('Downloading ' + name);
+        });
+      }
+
       // ---- trip animation: directional arrows + driving car + slider ----
 
       var CAR_SVG = '<div class="car-body">'
@@ -495,6 +632,10 @@
       // Time mode: interpolated timestamps along each segment, holding the
       // car still during stops (gaps between segments). Distance mode:
       // fallback when waypoint timestamps are missing.
+      // Each track point carries its trip ``day`` and a ``pi`` index into
+      // ``routePath`` (the full driven geometry) so the animation can draw
+      // the traveled portion and recolor by day. Segments of hidden days
+      // are skipped — the car teleports across them instead of driving.
       function buildTrack() {
         var segs = data.segments || [];
         var wps = data.waypoints || [];
@@ -509,11 +650,33 @@
           if (!isFinite(t0)) timed = false;
         }
         var track = [];
+        var routePath = [];
+        var pathIndex = 0;
+        var prevDay = 0;
+        function appendCoords(coords) {
+          // Append segment geometry to routePath (dedupe consecutive
+          // duplicates) and return the pi for each coordinate.
+          var pis = [];
+          for (var c = 0; c < coords.length; c++) {
+            var last = routePath[routePath.length - 1];
+            if (last && last[0] === coords[c][0] && last[1] === coords[c][1]) {
+              pis.push(pathIndex - 1);
+            } else {
+              routePath.push(coords[c]);
+              pis.push(pathIndex);
+              pathIndex++;
+            }
+          }
+          return pis;
+        }
         if (timed) {
           var prevEnd = null, prevPos = null, tMax = 0, kmSoFar = 0;
+          var hadHidden = false;
           segs.forEach(function (s) {
+            var day = (s.day_index == null) ? 0 : s.day_index;
             var coords = decodePolyline(s.encoded_polyline || '');
             if (coords.length < 2) return;
+            if (visibleDays[day] === false) { hadHidden = true; return; }
             var startT = (Date.parse(wps[s.start_index].timestamp) - t0) / 1000;
             var endT = (Date.parse(wps[s.end_index].timestamp) - t0) / 1000;
             // Use REAL elapsed time so the clock, day counter, and stop
@@ -521,18 +684,23 @@
             var dur = Math.max(endT - startT, 1);
             var segEnd = startT + dur;
             if (prevPos && startT > prevEnd) {
-              // Gap between segments. If the next segment starts at a
-              // different position (a disjoint), drive straight across the
-              // gap so the car never teleports; otherwise hold still (stop).
+              // Gap between segments. Hidden day(s) in between: teleport
+              // (same v, jump position). Otherwise, if the next segment
+              // starts at a different position (a disjoint), drive straight
+              // across the gap so the car never teleports; else hold still.
               var nextStart = coords[0];
-              if (prevPos[0] !== nextStart[0] || prevPos[1] !== nextStart[1]) {
-                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
-                track.push({ v: startT, lat: nextStart[0], lon: nextStart[1], km: kmSoFar });
+              if (hadHidden) {
+                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
+                track.push({ v: prevEnd, lat: nextStart[0], lon: nextStart[1], km: kmSoFar, day: day, pi: pathIndex, teleport: true });
+              } else if (prevPos[0] !== nextStart[0] || prevPos[1] !== nextStart[1]) {
+                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
+                track.push({ v: startT, lat: nextStart[0], lon: nextStart[1], km: kmSoFar, day: day, pi: pathIndex });
               } else {
-                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
-                track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar });
+                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
+                track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: day, pi: pathIndex - 1 });
               }
             }
+            var coordPi = appendCoords(coords);
             var dists = [], totalD = 0;
             for (var i = 1; i < coords.length; i++) {
               var d = map.distance(coords[i - 1], coords[i]);
@@ -543,19 +711,31 @@
               if (j > 0) cum += dists[j - 1];
               var frac = totalD > 0 ? cum / totalD : 0;
               var v = startT + dur * frac;
-              track.push({ v: v, lat: coords[j][0], lon: coords[j][1], km: kmSoFar + cum / 1000 });
+              track.push({ v: v, lat: coords[j][0], lon: coords[j][1], km: kmSoFar + cum / 1000, day: day, pi: coordPi[j] });
               if (v > tMax) tMax = v;
             }
             prevEnd = segEnd; prevPos = coords[coords.length - 1];
+            prevDay = day;
             kmSoFar += totalD / 1000;
+            hadHidden = false;
           });
           track.sort(function (x, y) { return x.v - y.v; });
-          return { mode: 'time', track: track, max: Math.max(tMax, 1), t0: t0 };
+          return { mode: 'time', track: track, max: Math.max(tMax, 1), t0: t0, routePath: routePath };
         }
         var km = 0;
+        var hadHidden = false;
         segs.forEach(function (s) {
+          var day = (s.day_index == null) ? 0 : s.day_index;
           var coords = decodePolyline(s.encoded_polyline || '');
           if (coords.length < 2) return;
+          if (visibleDays[day] === false) { hadHidden = true; return; }
+          if (hadHidden && track.length) {
+            var lastPt = track[track.length - 1];
+            track.push({ v: lastPt.v, lat: lastPt.lat, lon: lastPt.lon, km: lastPt.km, day: lastPt.day, pi: pathIndex - 1 });
+            track.push({ v: lastPt.v, lat: coords[0][0], lon: coords[0][1], km: lastPt.km, day: day, pi: pathIndex, teleport: true });
+            hadHidden = false;
+          }
+          var coordPi = appendCoords(coords);
           var dists = [], totalD = 0;
           for (var i = 1; i < coords.length; i++) {
             var d = map.distance(coords[i - 1], coords[i]);
@@ -564,17 +744,19 @@
           var cum = 0;
           for (var j = 0; j < coords.length; j++) {
             if (j > 0) cum += dists[j - 1];
-            track.push({ v: km + cum / 1000, lat: coords[j][0], lon: coords[j][1], km: km + cum / 1000 });
+            track.push({ v: km + cum / 1000, lat: coords[j][0], lon: coords[j][1], km: km + cum / 1000, day: day, pi: coordPi[j] });
           }
           km += totalD / 1000;
         });
-        return { mode: 'dist', track: track, max: Math.max(km, 1), t0: 0 };
+        return { mode: 'dist', track: track, max: Math.max(km, 1), t0: 0, routePath: routePath };
       }
 
       function addArrows() {
         var cap = 120, placed = 0;
         (data.segments || []).forEach(function (seg) {
           if (placed >= cap) return;
+          var day = (seg.day_index == null) ? 0 : seg.day_index;
+          if (visibleDays[day] === false) return;
           var coords = decodePolyline(seg.encoded_polyline || '');
           if (coords.length < 2) return;
           var dists = [], totalD = 0;
@@ -600,44 +782,196 @@
             var ic = L.divIcon({ className: 'dir-arrow', html: ARROW_SVG, iconSize: [16, 16], iconAnchor: [8, 8] });
             var m = L.marker([lat, lon], { icon: ic, interactive: false }).addTo(map);
             rotateEl(m.getElement().querySelector('svg'), bearingDeg(a, b) - 90);
+            arrowMarkers.push(m);
             placed++;
           }
         });
       }
 
       var anim = null;
-      var trackInfo = buildTrack();
-      if (trackInfo && trackInfo.track.length > 1) {
+      var car = null;
+      var traveledLine = null;
+      var arrowMarkers = [];
+      var rafId = null;
+
+      var controls = document.getElementById('anim-controls');
+      var playBtn = document.getElementById('anim-play');
+      var speedSel = document.getElementById('anim-speed');
+      var slider = document.getElementById('anim-slider');
+      var labelMain = document.getElementById('anim-label-main');
+      var labelSub = document.getElementById('anim-label-sub');
+
+      var LOOKAHEAD_M = 15;
+      function angleDiff(a, b) { return ((b - a + 540) % 360) - 180; }
+      function headingAt(p) {
+        var t = anim.track;
+        if (p.lo >= t.length - 1) return null;
+        var from = L.latLng(p.lat, p.lon);
+        var acc = 0;
+        for (var j = p.lo; j < t.length - 1; j++) {
+          var nxt = L.latLng(t[j + 1].lat, t[j + 1].lon);
+          acc += from.distanceTo(nxt);
+          from = nxt;
+          if (acc >= LOOKAHEAD_M) {
+            return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: nxt.lat, lon: nxt.lng });
+          }
+        }
+        return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: t[t.length - 1].lat, lon: t[t.length - 1].lon });
+      }
+
+      function posAt(v) {
+        var t = anim.track;
+        if (v <= t[0].v) return { v: t[0].v, lat: t[0].lat, lon: t[0].lon, a: t[0], b: t[0], lo: 0, km: t[0].km, pi: t[0].pi, day: t[0].day };
+        if (v >= t[t.length - 1].v) {
+          var e = t[t.length - 1];
+          return { v: e.v, lat: e.lat, lon: e.lon, a: e, b: e, lo: t.length - 1, km: e.km, pi: e.pi, day: e.day };
+        }
+        var lo = 0, hi = t.length - 1;
+        while (hi - lo > 1) {
+          var mid = (lo + hi) >> 1;
+          if (t[mid].v <= v) lo = mid; else hi = mid;
+        }
+        var a = t[lo], b = t[hi];
+        if (a.v === b.v) {
+          // Stop-hold or teleport: snap to the later point.
+          return { v: v, lat: b.lat, lon: b.lon, a: a, b: b, lo: lo, km: b.km, pi: b.pi, day: b.day };
+        }
+        var span = (b.v - a.v) || 1;
+        var f = (v - a.v) / span;
+        return { v: v, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, a: a, b: b, lo: lo, km: a.km + (b.km - a.km) * f, pi: a.pi, day: a.day };
+      }
+
+      var carIcon = L.divIcon({
+        className: 'car-icon',
+        html: CAR_SVG,
+        iconSize: [48, 26],
+        iconAnchor: [24, 13],
+        popupAnchor: [0, -15]
+      });
+
+      function haversineKm(aLat, aLon, bLat, bLon) {
+        var R = 6371.0088;
+        var p1 = aLat * Math.PI / 180, p2 = bLat * Math.PI / 180;
+        var dp = (bLat - aLat) * Math.PI / 180, dl = (bLon - aLon) * Math.PI / 180;
+        var h = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+        return 2 * R * Math.asin(Math.sqrt(h));
+      }
+      function fmtKm(km) {
+        if (data.unit === 'mi') return (km / 1.609344).toFixed(1) + ' mi';
+        return km.toFixed(1) + ' km';
+      }
+      function nextStopInfo(p) {
+        var stops = data.stops || [];
+        if (!stops.length) return null;
+        var nowMs = anim.mode === 'time' ? anim.t0 + anim.current * 1000 : null;
+        var best = null;
+        for (var i = 0; i < stops.length; i++) {
+          var s = stops[i];
+          var dist = haversineKm(p.lat, p.lon, s.latitude, s.longitude);
+          var name = s.name || ('Stop ' + (i + 1));
+          if (nowMs !== null && s.arrived_at) {
+            var arr = Date.parse(s.arrived_at);
+            var dep = s.departed_at ? Date.parse(s.departed_at) : arr;
+            if (nowMs >= arr && nowMs <= dep) return { at: true, name: name, dist: dist };
+            if (arr > nowMs && (!best || arr < best.arr)) best = { at: false, name: name, dist: dist, arr: arr };
+          } else if (!best || dist < best.dist) {
+            best = { at: false, name: name, dist: dist };
+          }
+        }
+        return best;
+      }
+      function animLabel(p) {
+        var main, sub = '';
+        if (anim.mode === 'time') {
+          var d = new Date(anim.t0 + anim.current * 1000);
+          var day = (p.day == null ? 0 : p.day) + 1;
+          main = '<span style="color:' + dayColor(p.day) + ';font-weight:700">Day ' + day + '</span> · '
+            + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ' · ' + fmtKm(p.km);
+        } else {
+          main = fmtKm(p.km);
+        }
+        var ns = nextStopInfo(p);
+        if (ns) sub = ns.at ? 'At: ' + ns.name : 'Next: ' + ns.name + ' · ' + fmtKm(ns.dist);
+        return { main: main, sub: sub };
+      }
+      function stepPerSec() { return anim.max * anim.pct / 100; }
+      function syncAnim() {
+        var p = posAt(anim.current);
+        car.setLatLng([p.lat, p.lon]);
+        // Parked (stop hold): keep the arrival heading instead of spinning.
+        var parked = p.a && p.b && p.a.lat === p.b.lat && p.a.lon === p.b.lon;
+        if (!parked) {
+          var bearing = headingAt(p);
+          if (bearing !== null && isFinite(bearing)) {
+            // Smooth turns while playing; snap instantly when scrubbing.
+            var factor = anim.playing ? 0.3 : 1;
+            anim.heading += angleDiff(anim.heading, bearing - 90) * factor;
+          }
+        }
+        rotateEl(car.getElement().querySelector('.car-body'), anim.heading);
+        // Traveled portion: a gray line from the trip start to the car,
+        // leaving the upcoming route in its day colors. Updated only when
+        // the car crosses a route point (or while scrubbing) to stay smooth.
+        if (traveledLine && anim.routePath && anim.routePath.length) {
+          var k = Math.max(0, Math.min(p.pi, anim.routePath.length - 1));
+          if (k !== anim.lastK || anim.dragging) {
+            anim.lastK = k;
+            var pts = anim.routePath.slice(0, k + 1);
+            pts.push([p.lat, p.lon]);
+            traveledLine.setLatLngs(pts);
+          }
+        }
+        var lbl = animLabel(p);
+        labelMain.innerHTML = lbl.main;
+        labelSub.textContent = lbl.sub;
+        if (!anim.dragging) slider.value = Math.round(anim.current / anim.max * 1000);
+      }
+      function frame(now) {
+        if (!anim.playing) { rafId = null; return; }
+        if (anim.lastFrame === null) anim.lastFrame = now;
+        var dt = (now - anim.lastFrame) / 1000;
+        anim.lastFrame = now;
+        anim.current += dt * stepPerSec();
+        if (anim.current >= anim.max) {
+          anim.current = anim.max;
+          anim.playing = false;
+          playBtn.textContent = '▶';
+        }
+        syncAnim();
+        rafId = requestAnimationFrame(frame);
+      }
+
+      function clearArrows() {
+        arrowMarkers.forEach(function (m) { map.removeLayer(m); });
+        arrowMarkers = [];
+      }
+      // (Re)build the animation from the currently visible days. Called once
+      // on load and again whenever a day is toggled in the legend.
+      function setupAnimation() {
+        clearArrows();
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        if (car) { map.removeLayer(car); car = null; }
+        if (traveledLine) { map.removeLayer(traveledLine); traveledLine = null; }
+        var info = buildTrack();
+        if (!info || info.track.length < 2) {
+          anim = null;
+          controls.style.display = 'none';
+          return;
+        }
         anim = {
-          track: trackInfo.track,
-          mode: trackInfo.mode,
-          t0: trackInfo.t0,
-          max: trackInfo.max,
+          track: info.track,
+          mode: info.mode,
+          t0: info.t0,
+          max: info.max,
+          routePath: info.routePath,
           current: 0,
-          pct: 1,
+          pct: parseFloat(speedSel.value) || 1,
           playing: false,
           dragging: false,
           lastFrame: null,
-          heading: 0
+          heading: 0,
+          lastK: -1
         };
-
-        var LOOKAHEAD_M = 15;
-        function angleDiff(a, b) { return ((b - a + 540) % 360) - 180; }
-        function headingAt(p) {
-          var t = anim.track;
-          if (p.lo >= t.length - 1) return null;
-          var from = L.latLng(p.lat, p.lon);
-          var acc = 0;
-          for (var j = p.lo; j < t.length - 1; j++) {
-            var nxt = L.latLng(t[j + 1].lat, t[j + 1].lon);
-            acc += from.distanceTo(nxt);
-            from = nxt;
-            if (acc >= LOOKAHEAD_M) {
-              return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: nxt.lat, lon: nxt.lng });
-            }
-          }
-          return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: t[t.length - 1].lat, lon: t[t.length - 1].lon });
-        }
         (function () {
           var t = anim.track;
           for (var i = 0; i < t.length - 1; i++) {
@@ -647,141 +981,65 @@
             }
           }
         })();
-
-        function posAt(v) {
-          var t = anim.track;
-          if (v <= t[0].v) return { v: t[0].v, lat: t[0].lat, lon: t[0].lon, a: t[0], b: t[0], lo: 0, km: t[0].km };
-          if (v >= t[t.length - 1].v) {
-            var e = t[t.length - 1];
-            return { v: e.v, lat: e.lat, lon: e.lon, a: e, b: e, lo: t.length - 1, km: e.km };
-          }
-          var lo = 0, hi = t.length - 1;
-          while (hi - lo > 1) {
-            var mid = (lo + hi) >> 1;
-            if (t[mid].v <= v) lo = mid; else hi = mid;
-          }
-          var a = t[lo], b = t[hi];
-          var span = (b.v - a.v) || 1;
-          var f = (v - a.v) / span;
-          return { v: v, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, a: a, b: b, lo: lo, km: a.km + (b.km - a.km) * f };
-        }
-
-        var carIcon = L.divIcon({
-          className: 'car-icon',
-          html: CAR_SVG,
-          iconSize: [48, 26],
-          iconAnchor: [24, 13],
-          popupAnchor: [0, -15]
-        });
-        var car = L.marker([anim.track[0].lat, anim.track[0].lon], { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
-
+        car = L.marker([anim.track[0].lat, anim.track[0].lon], { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
+        traveledLine = L.polyline([], { color: '#8a97a8', weight: 5.5, opacity: 0.95 }).addTo(map);
         addArrows();
-
-        var controls = document.getElementById('anim-controls');
-        var playBtn = document.getElementById('anim-play');
-        var speedSel = document.getElementById('anim-speed');
-        var slider = document.getElementById('anim-slider');
-        var labelMain = document.getElementById('anim-label-main');
-        var labelSub = document.getElementById('anim-label-sub');
         controls.style.display = 'flex';
-
-        function haversineKm(aLat, aLon, bLat, bLon) {
-          var R = 6371.0088;
-          var p1 = aLat * Math.PI / 180, p2 = bLat * Math.PI / 180;
-          var dp = (bLat - aLat) * Math.PI / 180, dl = (bLon - aLon) * Math.PI / 180;
-          var h = Math.sin(dp / 2) * Math.sin(dp / 2) + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
-          return 2 * R * Math.asin(Math.sqrt(h));
-        }
-        function fmtKm(km) {
-          if (data.unit === 'mi') return (km / 1.609344).toFixed(1) + ' mi';
-          return km.toFixed(1) + ' km';
-        }
-        function nextStopInfo(p) {
-          var stops = data.stops || [];
-          if (!stops.length) return null;
-          var nowMs = anim.mode === 'time' ? anim.t0 + anim.current * 1000 : null;
-          var best = null;
-          for (var i = 0; i < stops.length; i++) {
-            var s = stops[i];
-            var dist = haversineKm(p.lat, p.lon, s.latitude, s.longitude);
-            var name = s.name || ('Stop ' + (i + 1));
-            if (nowMs !== null && s.arrived_at) {
-              var arr = Date.parse(s.arrived_at);
-              var dep = s.departed_at ? Date.parse(s.departed_at) : arr;
-              if (nowMs >= arr && nowMs <= dep) return { at: true, name: name, dist: dist };
-              if (arr > nowMs && (!best || arr < best.arr)) best = { at: false, name: name, dist: dist, arr: arr };
-            } else if (!best || dist < best.dist) {
-              best = { at: false, name: name, dist: dist };
-            }
-          }
-          return best;
-        }
-        function animLabel(p) {
-          var main, sub = '';
-          if (anim.mode === 'time') {
-            var d = new Date(anim.t0 + anim.current * 1000);
-            var day = Math.floor(anim.current / 86400) + 1;
-            main = 'Day ' + day + ' · ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ' · ' + fmtKm(p.km);
-          } else {
-            main = fmtKm(p.km);
-          }
-          var ns = nextStopInfo(p);
-          if (ns) sub = ns.at ? 'At: ' + ns.name : 'Next: ' + ns.name + ' · ' + fmtKm(ns.dist);
-          return { main: main, sub: sub };
-        }
-        function stepPerSec() { return anim.max * anim.pct / 100; }
-        function syncAnim() {
-          var p = posAt(anim.current);
-          car.setLatLng([p.lat, p.lon]);
-          // Parked (stop hold): keep the arrival heading instead of spinning.
-          var parked = p.a && p.b && p.a.lat === p.b.lat && p.a.lon === p.b.lon;
-          if (!parked) {
-            var bearing = headingAt(p);
-            if (bearing !== null && isFinite(bearing)) {
-              // Smooth turns while playing; snap instantly when scrubbing.
-              var factor = anim.playing ? 0.3 : 1;
-              anim.heading += angleDiff(anim.heading, bearing - 90) * factor;
-            }
-          }
-          rotateEl(car.getElement().querySelector('.car-body'), anim.heading);
-          var lbl = animLabel(p);
-          labelMain.textContent = lbl.main;
-          labelSub.textContent = lbl.sub;
-          if (!anim.dragging) slider.value = Math.round(anim.current / anim.max * 1000);
-        }
-        var rafId = null;
-        function frame(now) {
-          if (!anim.playing) { rafId = null; return; }
-          if (anim.lastFrame === null) anim.lastFrame = now;
-          var dt = (now - anim.lastFrame) / 1000;
-          anim.lastFrame = now;
-          anim.current += dt * stepPerSec();
-          if (anim.current >= anim.max) {
-            anim.current = anim.max;
-            anim.playing = false;
-            playBtn.textContent = '▶';
-          }
-          syncAnim();
-          rafId = requestAnimationFrame(frame);
-        }
-        playBtn.addEventListener('click', function () {
-          anim.playing = !anim.playing;
-          playBtn.textContent = anim.playing ? '⏸' : '▶';
-          if (anim.playing) {
-            if (anim.current >= anim.max) anim.current = 0;
-            anim.lastFrame = null;
-            rafId = requestAnimationFrame(frame);
-          }
-        });
-        speedSel.addEventListener('change', function () { anim.pct = parseFloat(speedSel.value); });
-        slider.addEventListener('input', function () {
-          anim.dragging = true;
-          anim.current = slider.value / 1000 * anim.max;
-          syncAnim();
-          anim.dragging = false;
-        });
+        playBtn.textContent = '▶';
         syncAnim();
       }
+
+      playBtn.addEventListener('click', function () {
+        anim.playing = !anim.playing;
+        playBtn.textContent = anim.playing ? '⏸' : '▶';
+        if (anim.playing) {
+          if (anim.current >= anim.max) anim.current = 0;
+          anim.lastFrame = null;
+          rafId = requestAnimationFrame(frame);
+        }
+      });
+      speedSel.addEventListener('change', function () { anim.pct = parseFloat(speedSel.value); });
+      slider.addEventListener('input', function () {
+        anim.dragging = true;
+        anim.current = slider.value / 1000 * anim.max;
+        syncAnim();
+        anim.dragging = false;
+      });
+
+      // ---- mobile: swipe up/down on the map to change speed ----
+      var SPEEDS = [0.02, 0.05, 0.1, 0.25, 1, 4, 16];
+      var touchY = null, touchX = null, touchT = null;
+      var mapEl = document.getElementById('map');
+      mapEl.addEventListener('touchstart', function (e) {
+        if (e.touches.length !== 1) { touchY = null; return; }
+        touchY = e.touches[0].clientY;
+        touchX = e.touches[0].clientX;
+        touchT = Date.now();
+      }, { passive: true });
+      mapEl.addEventListener('touchend', function (e) {
+        if (touchY === null || !anim) return;
+        var dy = e.changedTouches[0].clientY - touchY;
+        var dx = e.changedTouches[0].clientX - touchX;
+        var dt = Date.now() - touchT;
+        touchY = null;
+        if (dt > 700 || Math.abs(dy) < 50 || Math.abs(dy) < Math.abs(dx) * 1.5) return;
+        var idx = SPEEDS.indexOf(parseFloat(speedSel.value));
+        if (idx < 0) idx = 4;
+        idx = dy < 0 ? Math.min(idx + 1, SPEEDS.length - 1) : Math.max(idx - 1, 0);
+        speedSel.value = String(SPEEDS[idx]);
+        anim.pct = SPEEDS[idx];
+        toast('Speed: ' + speedSel.options[speedSel.selectedIndex].text);
+      }, { passive: true });
+
+      // Tap the label to play / pause.
+      var labelBox = document.getElementById('anim-label');
+      if (labelBox) {
+        labelBox.addEventListener('click', function () {
+          if (anim) playBtn.click();
+        });
+      }
+
+      setupAnimation();
 
       if (bounds.length) {
         map.fitBounds(L.latLngBounds(bounds), { padding: [40, 40], maxZoom: 14 });

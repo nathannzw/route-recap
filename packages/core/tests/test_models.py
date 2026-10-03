@@ -9,6 +9,7 @@ from route_recap.core.models import (
     DistanceUnit,
     MediaMetadata,
     MediaType,
+    RouteSegment,
     TripConfig,
     TripSummary,
     Waypoint,
@@ -55,6 +56,20 @@ def test_trip_summary_off_road_count():
         ],
     )
     assert summary.off_road_count == 2
+
+
+def test_trip_summary_day_count():
+    segs = [
+        RouteSegment(start_index=0, end_index=1, day_index=0),
+        RouteSegment(start_index=1, end_index=2, day_index=1),
+        RouteSegment(start_index=2, end_index=3, day_index=3),  # day 2 skipped
+    ]
+    assert TripSummary(trip_name="t", segments=segs).day_count == 4
+    # No segments (or unassigned days) => 0.
+    assert TripSummary(trip_name="empty").day_count == 0
+    assert TripSummary(
+        trip_name="legacy", segments=[RouteSegment(start_index=0, end_index=1)]
+    ).day_count == 0
 
 
 def test_trip_config_defaults():

@@ -12,6 +12,28 @@ from route_recap.core.models import TripSummary
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+#: Distinct, basemap-friendly colors for per-day route rendering. Trips with
+#: more days than colors cycle through the palette.
+DAY_PALETTE = [
+    "#d62728",  # red
+    "#2ca02c",  # green
+    "#1f77b4",  # blue
+    "#ff7f0e",  # orange
+    "#9467bd",  # purple
+    "#17becf",  # cyan
+    "#e377c2",  # pink
+    "#8c564b",  # brown
+    "#bcbd22",  # olive
+    "#393b79",  # indigo
+    "#843c39",  # maroon
+    "#637939",  # dark green
+]
+
+
+def _day_count(summary: TripSummary) -> int:
+    """Number of distinct trip days covered by the route segments."""
+    return summary.day_count or 1
+
 
 def _fmt_duration(seconds: float) -> str:
     total = int(round(seconds))
@@ -102,6 +124,8 @@ def build_html(
         "off_road_count": summary.off_road_count,
         "media_count": f"{summary.media_processed:,}",
         "provider_note": _provider_note(summary),
+        "day_count": _day_count(summary),
+        "day_palette": DAY_PALETTE,
     }
 
     html = template.render(**context)

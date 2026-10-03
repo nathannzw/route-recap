@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime
+from datetime import date, datetime
+from typing import Sequence
 
-from .models import Stop, Waypoint
+from .models import RouteSegment, Stop, Waypoint
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,45 @@ def detect_stops(
             a.stop_index = len(stops)
             stops.append(stop)
     return waypoints, stops
+
+
+def assign_days(
+    waypoints: Sequence[Waypoint],
+    segments: Sequence[RouteSegment],
+) -> list[RouteSegment]:
+    """Tag each route segment with the 0-based day of the trip it belongs to.
+
+    Day 0 is the first calendar day of the trip (the earliest waypoint
+    timestamp). A segment's day is derived from its start waypoint's
+    timestamp, falling back to the end waypoint when the start is untimed.
+    Segments whose waypoints carry no timestamps inherit the previous
+    segment's day (0 at the trip start). Returns new segment objects with
+    ``day_index`` set — the input segments are not mutated.
+    """
+    if not segments:
+        return list(segments)
+
+    start_date: date | None = None
+    for w in waypoints:
+        if w.timestamp is not None:
+            start_date = w.timestamp.date()
+            break
+    if start_date is None:
+        return [s.model_copy(update={"day_index": 0}) for s in segments]
+
+    result: list[RouteSegment] = []
+    last_day = 0
+    for s in segments:
+        day = last_day
+        for idx in (s.start_index, s.end_index):
+            if 0 <= idx < len(waypoints):
+                ts = waypoints[idx].timestamp
+                if ts is not None:
+                    day = max(0, (ts.date() - start_date).days)
+                    break
+        last_day = day
+        result.append(s.model_copy(update={"day_index": day}))
+    return result
 
 
 # ------------------------------------------------------------------- helpers

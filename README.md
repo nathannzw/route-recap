@@ -28,10 +28,14 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
    points become **off-road POIs** on the map.
 6. **Builds a static report** — one `index.html` with the trip data embedded,
    a Leaflet map with the route, numbered stop pins and off-road POIs, plus a
-   `summary.json` sidecar. Trip media is hardlinked into the report folder
-   with thumbnails, and stop popups show photo strips linking back to the
-   originals. Leaflet and the basemap tiles load from the network when you
-   open the report.
+   `summary.json` sidecar. Each trip **day gets its own route color**, the
+   legend has day filter buttons, and a **drive animation** plays the whole
+   journey with a car whose traveled trail turns gray while the road ahead
+   keeps its day color. Trip media is hardlinked into the report folder with
+   thumbnails, and stop popups show photo strips linking back to the
+   originals. The single HTML file is **shareable and works on mobile** — a
+   Share button copies the link and a Download button saves the file. Leaflet
+   and the basemap tiles load from the network when you open the report.
 
 ## 🔄 How a trip becomes a map
 
@@ -129,8 +133,8 @@ flowchart TD
 | Package | Responsibility |
 |---|---|
 | `packages/cli` | Collects trip settings, runs the pipeline, shows progress and opens the report. |
-| `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes and reverse-geocodes. |
-| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json`; stages media hardlinks and thumbnails. |
+| `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes, reverse-geocodes, and tags route segments with their trip day. |
+| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json` — day-colored routes, day filter legend, drive animation, and sharing; stages media hardlinks and thumbnails. |
 
 **Routing detail:** when Google routing succeeds, road-snapped waypoints form
 the road route. Consecutive waypoints Google cannot snap (roads it lacks in
@@ -151,6 +155,29 @@ parallel (a few seconds for hundreds of stops); the Nominatim fallback runs
 sequentially at its ~1 request/second policy limit. Stop pins and POI markers
 are marker-clustered on the map, so the report stays readable with hundreds of
 stops.
+
+## 🌈 Day colors, animation & sharing
+
+**Color-coded routes by day.** After routing, `clustering.assign_days` tags
+every `RouteSegment` with the 0-based day it belongs to (derived from its
+start waypoint's timestamp, so an overnight leg stays on the day it set off).
+The report renders each segment in that day's color from a curated 12-color
+palette (trips longer than 12 days cycle), and the legend lists one toggle per
+day so you can show or hide individual days.
+
+**Day-aware animation.** The play/speed/slider controls drive a car along the
+route. The traveled trail is grayed out behind the car while the road ahead
+stays in its day color, so the line visibly changes color as you cross into a
+new day; the label's `Day N` chip is tinted with that day's color too.
+Toggling a day off removes its segments from the animation timeline, and the
+car teleports across the hidden days instead of driving a straight line.
+
+**Share anywhere.** The report is a self-contained HTML file — no server, no
+setup, and it works offline for the data (tiles and the Leaflet library are
+the only network requests). The header has a **Share** button that copies the
+report link and a **Download** button that saves the HTML. On touch devices,
+swipe up/down on the map to change animation speed and tap the progress label
+to play/pause.
 
 ```
 route-recap/

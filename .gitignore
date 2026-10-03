@@ -223,3 +223,10 @@ __marimo__/
 /output/*
 !/output/.gitkeep
 
+# Agent skills vendored by `npx skills add mattpocock/skills`.
+# The trees are generated duplicates (Claude Code reads .claude/skills, other
+# agents read .agents/skills) and are reproducible from skills-lock.json, which
+# stays tracked. Project-owned config (AGENTS.md, docs/agents/) is tracked too.
+.agents/skills/
+.claude/skills/
+

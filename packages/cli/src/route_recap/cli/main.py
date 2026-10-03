@@ -36,6 +36,7 @@ from route_recap.core import (
     TripConfig,
     TripSummary,
     Waypoint,
+    assign_days,
     compute_route,
     deduplicate,
     detect_stops,
@@ -249,6 +250,9 @@ def _run_pipeline(config: TripConfig) -> TripSummary:
             console.print(f"[yellow]Routing failed: {exc}[/yellow]")
             console.print("[yellow]Report will be generated without a route line.[/yellow]")
 
+    if segments:
+        segments = assign_days(waypoints, segments)
+
     if config.geocode_stops and stops:
         uses_nominatim = not os.getenv("GOOGLE_MAPS_API_KEY")
         with console.status("Naming stops..."):
@@ -293,6 +297,8 @@ def _show_summary(summary: TripSummary, output_path: Path) -> None:
     table.add_row("Driving time", f"{summary.driving_duration_s / 3600:.1f} h")
     table.add_row("Stop time", f"{summary.stop_duration_s / 3600:.1f} h")
     table.add_row("Stops", str(summary.stop_count))
+    if summary.day_count:
+        table.add_row("Days", str(summary.day_count))
     table.add_row("Off-road points", str(summary.off_road_count))
     table.add_row("Media", f"{summary.media_processed} (GPS: {summary.media_with_gps})")
     if summary.media_excluded:

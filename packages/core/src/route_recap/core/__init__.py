@@ -1,6 +1,12 @@
 """Core pipeline for route-recap: EXIF extraction, clustering, and routing."""
 
-from .clustering import deduplicate, detect_stops, filter_outliers, haversine_m
+from .clustering import (
+    assign_days,
+    deduplicate,
+    detect_stops,
+    filter_outliers,
+    haversine_m,
+)
 from .extractor import MediaExtractor
 from .models import (
     DistanceUnit,
@@ -34,6 +40,7 @@ __all__ = [
     "TripConfig",
     "TripSummary",
     "Waypoint",
+    "assign_days",
     "compute_route",
     "deduplicate",
     "detect_stops",

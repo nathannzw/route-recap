@@ -131,6 +131,10 @@ class RouteSegment(BaseModel):
     encoded_polyline: str = ""
     distance_m: float = Field(default=0.0, ge=0)
     duration_s: float = Field(default=0.0, ge=0)
+    #: 0-based day of the trip this segment belongs to, derived from the
+    #: start waypoint's timestamp (see ``clustering.assign_days``). ``None``
+    #: for legacy data that predates day assignment.
+    day_index: int | None = None
 
 
 class TripConfig(BaseModel):
@@ -182,6 +186,12 @@ class TripSummary(BaseModel):
     @property
     def off_road_count(self) -> int:
         return sum(1 for w in self.waypoints if w.off_road)
+
+    @property
+    def day_count(self) -> int:
+        """Number of distinct trip days covered by the route (0 if no route)."""
+        days = [s.day_index for s in self.segments if s.day_index is not None]
+        return (max(days) + 1) if days else 0
 
     def display_distance(self) -> str:
         if self.unit is DistanceUnit.MI:

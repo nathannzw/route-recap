@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 
 from route_recap.core.clustering import (
+    assign_days,
     deduplicate,
     detect_stops,
     filter_outliers,
     haversine_m,
 )
-from route_recap.core.models import Waypoint
+from route_recap.core.models import RouteSegment, Waypoint
 
 T0 = datetime(2026, 8, 14, 9, 0, 0)
 
@@ -188,3 +189,75 @@ def test_filter_outliers_no_jumps_keeps_everything():
     kept, excluded = filter_outliers(pts)
     assert len(kept) == 3
     assert excluded == []
+
+
+# ------------------------------------------------------------- day assignment
+
+
+def seg(start, end):
+    return RouteSegment(start_index=start, end_index=end)
+
+
+def test_assign_days_groups_by_calendar_day():
+    # Each segment starts on a distinct calendar day.
+    wps = [
+        wp(63.4, -19.0, T0),                              # day 0
+        wp(63.5, -19.1, T0 + timedelta(days=1, hours=1)), # day 1
+        wp(63.6, -19.2, T0 + timedelta(days=2, hours=1)), # day 2
+        wp(63.7, -19.3, T0 + timedelta(days=3, hours=1)), # day 3
+    ]
+    out = assign_days(wps, [seg(0, 1), seg(1, 2), seg(2, 3)])
+    assert [s.day_index for s in out] == [0, 1, 2]
+
+
+def test_assign_days_segment_belongs_to_start_day():
+    # A segment crossing midnight keeps the day it starts on.
+    wps = [
+        wp(63.4, -19.0, T0),
+        wp(63.5, -19.1, T0 + timedelta(hours=2)),
+        wp(63.6, -19.2, T0 + timedelta(days=1, hours=2)),
+    ]
+    out = assign_days(wps, [seg(0, 1), seg(1, 2)])
+    assert [s.day_index for s in out] == [0, 0]
+
+
+def test_assign_days_uses_end_waypoint_when_start_untimed():
+    wps = [
+        wp(63.4, -19.0, T0),
+        wp(63.5, -19.1, None),  # untimed start — falls back to end waypoint
+        wp(63.6, -19.2, T0 + timedelta(days=1)),
+    ]
+    out = assign_days(wps, [seg(0, 1), seg(1, 2)])
+    assert [s.day_index for s in out] == [0, 1]
+
+
+def test_assign_days_untimed_segment_inherits_previous_day():
+    wps = [
+        wp(63.4, -19.0, T0),
+        wp(63.5, -19.1, None),
+        wp(63.6, -19.2, None),
+        wp(63.7, -19.3, T0 + timedelta(days=1)),
+    ]
+    out = assign_days(wps, [seg(0, 1), seg(1, 2), seg(2, 3)])
+    assert [s.day_index for s in out] == [0, 0, 1]
+
+
+def test_assign_days_no_timestamps_defaults_to_day_zero():
+    wps = [wp(63.4, -19.0, None), wp(63.5, -19.1, None)]
+    out = assign_days(wps, [seg(0, 1)])
+    assert [s.day_index for s in out] == [0]
+
+
+def test_assign_days_does_not_mutate_input_segments():
+    wps = [
+        wp(63.4, -19.0, T0),
+        wp(63.5, -19.1, T0 + timedelta(days=1)),
+    ]
+    original = [seg(0, 1)]
+    out = assign_days(wps, original)
+    assert out[0].day_index == 0  # start waypoint is day 0
+    assert original[0].day_index is None  # input untouched
+
+
+def test_assign_days_empty_segments():
+    assert assign_days([], []) == []
