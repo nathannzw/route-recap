@@ -5,6 +5,25 @@ from pathlib import Path
 import pytest
 
 from route_recap.core.extractor import MediaExtractor, parse_gps, parse_timestamp
+from route_recap.core.models import MediaType
+
+
+class _FakeExifTool:
+    """Stand-in for pyexiftool's helper, recording how it is called.
+
+    ``get_tags`` mirrors the real signature ``(files, tags, params)``.
+    """
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.kwargs: dict | None = None
+
+    def get_tags(self, files=None, tags=None, params=None):  # noqa: ANN001
+        self.kwargs = {"files": files, "tags": tags}
+        return [self.payload]
+
+    def terminate(self) -> None:
+        pass
 
 
 def _make_jpeg(path: Path, *, with_gps: bool = True) -> None:
@@ -86,3 +105,58 @@ def test_list_media_filters_extensions(tmp_path):
     extractor = MediaExtractor()
     found = {p.name for p in extractor.list_media(tmp_path, recursive=False)}
     assert found == {"a.jpg", "b.HEIC", "c.mov"}
+
+
+# --------------------------------------------------------------- exiftool path
+
+#: Realistic pyexiftool output: keys are group-prefixed, GPS comes back as a
+#: Composite value (no N/S/E/W ref tags) and QuickTime holds the timestamp.
+_MOV_TAGS = {
+    "SourceFile": "clip.mov",
+    "File:FileType": "MOV",
+    "Composite:GPSLatitude": 63.9954,
+    "Composite:GPSLongitude": -22.6187,
+    "Composite:GPSAltitude": 45.607,
+    "QuickTime:CreateDate": "2026:09:12 07:57:46",
+    "QuickTime:Make": "Apple",
+    "QuickTime:Model": "iPhone 15",
+}
+
+
+def test_read_exiftool_passes_file_as_first_arg(tmp_path):
+    """Regression: pyexiftool's signature is get_tags(files, tags).
+
+    The call was previously reversed (tags first), which made pyexiftool treat
+    the file path as an invalid tag name and raise — so ExifTool never worked.
+    Images survived via the Pillow fallback; videos were dropped entirely.
+    """
+    fake = _FakeExifTool(_MOV_TAGS)
+    tags = MediaExtractor._read_exiftool(fake, Path("clip.mov"))
+
+    assert fake.kwargs is not None
+    assert "GPSLatitude" in fake.kwargs["tags"]
+    assert "clip.mov" in str(fake.kwargs["files"])
+    # Group prefixes are stripped so lookups by bare name work.
+    assert tags["GPSLatitude"] == 63.9954
+    assert tags["CreateDate"] == "2026:09:12 07:57:46"
+
+
+def test_extract_video_gets_gps_from_exiftool(tmp_path, monkeypatch):
+    """Videos have no Pillow fallback, so ExifTool is their only GPS source."""
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"not a real movie")
+    fake = _FakeExifTool(_MOV_TAGS)
+    monkeypatch.setattr(MediaExtractor, "_open_exiftool", lambda self: fake)
+
+    result = MediaExtractor().extract_files([clip])
+
+    assert result.total_files == 1
+    assert result.skipped == 0
+    meta = result.items[0]
+    assert meta.media_type is MediaType.VIDEO
+    assert meta.has_gps
+    assert meta.latitude == pytest.approx(63.9954)
+    assert meta.longitude == pytest.approx(-22.6187)
+    assert meta.datetime_original is not None
+    assert meta.datetime_original.strftime("%Y-%m-%d %H:%M:%S") == "2026-09-12 07:57:46"
+    assert meta.model == "iPhone 15"

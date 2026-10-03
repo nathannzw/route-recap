@@ -7,7 +7,7 @@ import http.server
 import logging
 import os
 import re
-import socketserver
+import socket
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,9 +43,12 @@ from route_recap.core import (
     filter_outliers,
     reverse_geocode_detail,
 )
-from route_recap.generator import build_html, stage_media
+from route_recap.generator import build_html, build_single_file, stage_media
 
-load_dotenv()
+#: ``load_dotenv()`` is deliberately NOT called at import time — importing a
+#: module should not mutate process-wide state (it leaked a real API key into
+#: any process that merely imported the CLI, e.g. the test suite). The entry
+#: point below loads ``.env`` when a pipeline run actually starts.
 
 app = typer.Typer(
     add_completion=False,
@@ -289,6 +292,30 @@ def _slug(name: str) -> str:
     return slug or "trip"
 
 
+def _lan_ipv4_addresses() -> list[str]:
+    """Local IPv4 addresses a phone on the same Wi-Fi can reach.
+
+    Loopback is useless to another device, so it is filtered out. The UDP
+    "connect" only asks the OS which interface it *would* use for the internet
+    — no packet is sent (TEST-NET-1 is unroutable by design).
+    """
+    addrs: set[str] = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addrs.add(info[4][0])
+    except OSError:
+        pass
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 1))
+        addrs.add(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        probe.close()
+    return sorted(a for a in addrs if not a.startswith("127."))
+
+
 def _show_summary(summary: TripSummary, output_path: Path) -> None:
     table = Table(title=None, show_header=False, box=None, padding=(0, 2))
     table.add_column(style="bold cyan")
@@ -307,6 +334,33 @@ def _show_summary(summary: TripSummary, output_path: Path) -> None:
     table.add_row("Router", summary.routing_provider or "none")
     console.print(Panel(table, title=f"[bold]{summary.trip_name}[/bold]", expand=False))
     console.print(f"[green]Report written to[/green] {output_path}")
+
+
+def _export_single_file(
+    summary: TripSummary,
+    output_dir: Path,
+    *,
+    carto_key: str | None,
+    assets: dict[str, dict],
+    embed_photos: bool,
+    max_embed_mb: float,
+    inline_libraries: bool,
+) -> tuple[Path, list[str]]:
+    """Write the shareable ``journey.html``.
+
+    Kept as a named helper so the option names the CLI exposes are mapped to
+    the builder's parameters in exactly one place — an earlier mismatch between
+    the two raised ``TypeError`` the first time the flag was actually used.
+    """
+    return build_single_file(
+        summary,
+        output_dir,
+        carto_key=carto_key,
+        assets=assets,
+        embed=embed_photos,
+        max_embed_mb=max_embed_mb,
+        inline_libraries=inline_libraries,
+    )
 
 
 # ------------------------------------------------------------------- command
@@ -350,6 +404,35 @@ def main(
     no_open: Annotated[
         bool, typer.Option("--no-open", help="Do not open the report in the browser")
     ] = False,
+    single_file: Annotated[
+        bool,
+        typer.Option(
+            "--single-file",
+            help="Also write journey.html: one self-contained file you can "
+            "AirDrop / email to someone (no server needed).",
+        ),
+    ] = False,
+    embed_photos: Annotated[
+        bool,
+        typer.Option(
+            "--embed-photos/--no-embed-photos",
+            help="Embed small photo copies in journey.html (default: yes).",
+        ),
+    ] = True,
+    max_embed_mb: Annotated[
+        float,
+        typer.Option(
+            "--max-embed-mb",
+            help="Photo budget for journey.html, in MB.",
+        ),
+    ] = 20.0,
+    inline_libraries: Annotated[
+        bool,
+        typer.Option(
+            "--inline-libraries/--no-inline-libraries",
+            help="Inline Leaflet in journey.html so it needs no CDN.",
+        ),
+    ] = True,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Verbose logging")
     ] = False,
@@ -357,10 +440,12 @@ def main(
     """Reconstruct a road-trip route from geotagged media and render an HTML map.
 
     Run bare (no subcommand) to process a trip; use `route-recap serve` to
-    browse reports with photos.
+    browse reports with photos, or `--single-file` for one file you can send
+    to someone.
     """
     if ctx.invoked_subcommand is not None:
         return
+    load_dotenv()  # read .env only when a pipeline run actually starts
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
 
@@ -414,10 +499,44 @@ def main(
         console.print(
             "[dim]Tip: set CARTO_BASEMAP_KEY in .env to use CARTO basemap tiles.[/dim]"
         )
+
+    if single_file:
+        with console.status("Building a single shareable file..."):
+            share_path, warnings = _export_single_file(
+                summary,
+                output_dir,
+                carto_key=carto_key,
+                assets=assets,
+                embed_photos=embed_photos,
+                max_embed_mb=max_embed_mb,
+                inline_libraries=inline_libraries,
+            )
+        for warning in warnings:
+            console.print(f"[yellow]{warning}[/yellow]")
+        size_mb = share_path.stat().st_size / (1024 * 1024)
+        console.print(
+            f"\n[green]Shareable file ready[/green] ({size_mb:.1f} MB): "
+            f"[bold]{share_path}[/bold]"
+        )
+        console.print(
+            "[dim]AirDrop, email or message this one file — no server, no "
+            "setup. The recipient opens it and the journey works.[/dim]"
+        )
+        if not embed_photos:
+            console.print(
+                "[dim]Photos were not embedded (--no-embed-photos), so the "
+                "file is tiny but has no images.[/dim]"
+            )
+        elif warnings:
+            console.print(
+                "[dim]Photos beyond the budget were omitted to keep the file "
+                "shareable; raise it with --max-embed-mb.[/dim]"
+            )
+
     if assets:
         console.print(
-            "[dim]Photos are viewable in the map popups via the local server:[/dim] "
-            "[bold]uv run route-recap serve[/bold]"
+            "[dim]Full-resolution photos are viewable in the map popups via "
+            "the local server:[/dim] [bold]uv run route-recap serve[/bold]"
         )
 
     if not no_open and Confirm.ask("Open the report in your browser?", default=True):
@@ -432,11 +551,22 @@ def serve(
     port: Annotated[
         int, typer.Option("--port", "-p", help="Port to listen on")
     ] = 8000,
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help="Interface to bind. Use 0.0.0.0 to open reports on your phone.",
+        ),
+    ] = "127.0.0.1",
     no_open: Annotated[
         bool, typer.Option("--no-open", help="Do not open the browser")
     ] = False,
 ) -> None:
-    """Serve reports + media over HTTP (browsers block file:// images)."""
+    """Serve reports + media over HTTP (browsers block file:// images).
+
+    Pass ``--host 0.0.0.0`` to open the report on a phone or tablet on the
+    same Wi-Fi; the LAN address to type on the device is printed for you.
+    """
     directory = directory.resolve()
     if not directory.is_dir():
         console.print(f"[red]Folder not found: {directory}[/red]")
@@ -445,16 +575,40 @@ def serve(
         http.server.SimpleHTTPRequestHandler, directory=str(directory)
     )
     trips = sorted(directory.glob("*/index.html"))
+    exposed = host in ("0.0.0.0", "::")
+    lan_hosts = _lan_ipv4_addresses() if exposed else []
+
     console.print(
         f"[green]Serving {directory}[/green] at "
         f"[bold]http://127.0.0.1:{port}/[/bold]"
     )
+    if lan_hosts:
+        console.print(
+            "[green]On your phone (same Wi-Fi):[/green] "
+            + "  ".join(f"[bold]http://{ip}:{port}/[/bold]" for ip in lan_hosts)
+        )
+        console.print(
+            "[dim]If it times out, allow Python through the firewall "
+            "(Windows: Private networks).[/dim]"
+        )
+    elif not exposed:
+        console.print(
+            "[dim]Tip: add [bold]--host 0.0.0.0[/bold] to open this on your "
+            "phone.[/dim]"
+        )
+    else:
+        console.print(
+            "[yellow]No LAN address detected — run `ipconfig` and check that "
+            "Wi-Fi is connected.[/yellow]"
+        )
+
     if trips:
         console.print("Trip reports:")
         for t in trips:
-            console.print(
-                f"  • http://127.0.0.1:{port}/{t.relative_to(directory).as_posix()}"
-            )
+            rel = t.relative_to(directory).as_posix()
+            console.print(f"  • http://127.0.0.1:{port}/{rel}")
+            for ip in lan_hosts:
+                console.print(f"    [dim][arrow] http://{ip}:{port}/{rel}[/dim]")
     else:
         console.print(
             f"[dim]No reports found — expected {directory / '<trip>' / 'index.html'}[/dim]"
@@ -463,7 +617,7 @@ def serve(
         webbrowser.open(
             f"http://127.0.0.1:{port}/{trips[0].relative_to(directory).as_posix()}"
         )
-    with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as httpd:
+    with http.server.ThreadingHTTPServer((host, port), handler) as httpd:
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

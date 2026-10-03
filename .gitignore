@@ -229,4 +229,3 @@ __marimo__/
 # stays tracked. Project-owned config (AGENTS.md, docs/agents/) is tracked too.
 .agents/skills/
 .claude/skills/
-

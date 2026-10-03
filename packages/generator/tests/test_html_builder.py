@@ -75,3 +75,67 @@ def test_day_palette_is_non_empty_and_distinct():
     assert len(DAY_PALETTE) >= 8
     assert len(set(DAY_PALETTE)) == len(DAY_PALETTE)
     assert all(c.startswith("#") and len(c) == 7 for c in DAY_PALETTE)
+
+
+def test_build_html_includes_theme_icon_and_reveal_hooks(tmp_path):
+    summary = _summary(day_indexes=[0, 1])
+    html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
+
+    # Dark-mode toggle: button, theme variables, persistence key, tile fallback.
+    assert 'id="btn-theme"' in html
+    assert "html.dark" in html
+    assert "route-recap-theme" in html
+    assert "tiles-fallback" in html
+    assert "dark_all" in html  # CARTO dark basemap style
+
+    # Icons instead of plain circles for waypoints / off-road POIs.
+    assert "poi-icon" in html
+    assert "📷" in html
+    assert "🏔️" in html
+
+    # Arrows take their day's route color, and the route reveal is progressive.
+    assert "arrowSvg" in html
+    assert "renderTrail" in html
+    assert "setStaticRouteVisible" in html
+    # The car must not be rotated to the travel heading any more.
+    assert "headingAt" not in html
+
+
+def test_build_html_has_reset_arrow_spacing_and_legend_clarity(tmp_path):
+    summary = _summary(day_indexes=[0, 1])
+    html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
+
+    # Restart control for the journey.
+    assert 'id="anim-reset"' in html
+    assert "Back to the start of the journey" in html
+
+    # Arrows are placed at an even distance interval, rotated inside the SVG.
+    assert "ARROW_TARGET" in html
+    assert "ARROW_MIN_SPACING_KM" in html
+    assert "rot.toFixed(1)" in html  # rotation baked into the SVG transform
+    # anim must carry routeDays, else every arrow silently falls back to day 0.
+    assert "routeDays: info.routeDays" in html
+
+    # Constant nominal pace with capped stop pauses (no timestamp-driven speedups).
+    assert "NOMINAL_KMH" in html
+    assert "MAX_PAUSE_S" in html
+
+    # Legend explains what the numbered pin and the clusters mean.
+    assert "numbered pin" in html
+    assert "Cluster" in html
+
+
+def test_build_html_supports_ios_safari(tmp_path):
+    summary = _summary(day_indexes=[0])
+    html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
+
+    # viewport-fit + env() keep content clear of the notch / home indicator.
+    assert "viewport-fit=cover" in html
+    assert "env(safe-area-inset-top)" in html
+    assert "env(safe-area-inset-bottom)" in html
+    # dvh tracks Safari's collapsing toolbar.
+    assert "100dvh" in html
+    assert "-webkit-text-size-adjust" in html
+    # Native share sheet beats clipboard on iOS (no secure context on http://).
+    assert "navigator.share" in html
+    assert "AbortError" in html

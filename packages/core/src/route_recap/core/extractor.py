@@ -284,10 +284,13 @@ class MediaExtractor:
 
     @staticmethod
     def _read_exiftool(et: "ExifToolHelper", path: Path) -> dict[str, object]:
-        out = et.get_tags(_EXIFTOOL_TAGS, str(path))
+        # pyexiftool's signature is get_tags(files, tags, params) — pass by
+        # keyword so a positional mix-up can never silently drop every file.
+        out = et.get_tags(files=str(path), tags=_EXIFTOOL_TAGS)
         if not out or not isinstance(out[0], dict):
             return {}
-        # -G prefixes keys with group names (e.g. "EXIF:GPSLatitude").
+        # Keys may be group-prefixed (e.g. "EXIF:GPSLatitude") depending on
+        # the params used; normalise to the bare tag name either way.
         return {str(k).split(":", 1)[-1]: v for k, v in out[0].items()}
 
     # ---------------------------------------------------------------- pillow

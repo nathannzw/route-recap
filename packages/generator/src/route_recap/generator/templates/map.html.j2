@@ -2,13 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
   <title>{{ trip_name }} · route-recap</title>
+{% if vendor_css %}
+  <style>{{ vendor_css | safe }}</style>
+{% else %}
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+{% endif %}
+  <script>
+    // Apply the saved/preferred theme before first paint (avoids a light flash).
+    (function () {
+      try {
+        var stored = localStorage.getItem('route-recap-theme');
+        var dark = stored ? stored === 'dark'
+          : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.classList.add('dark');
+      } catch (e) {}
+    })();
+  </script>
   <style>
     :root {
+      color-scheme: light;
       --ink: #10243e;
       --muted: #5b6b81;
       --brand: #157a8c;
@@ -16,9 +33,31 @@
       --accent: #ff6b4a;
       --card: #ffffff;
       --bg: #f4f6fb;
+      --border: #e6eaf2;
+      --field: #ffffff;
+      --hover: #f2f6fc;
+      --shadow: rgba(16, 36, 62, 0.2);
+      --halo: rgba(255, 255, 255, 0.85);
+    }
+    html.dark {
+      color-scheme: dark;
+      --ink: #e7eef8;
+      --muted: #9cb0c8;
+      --brand: #38c6d9;
+      --brand-deep: #08131f;
+      --accent: #ff8a66;
+      --card: #16202d;
+      --bg: #0a1017;
+      --border: #26313f;
+      --field: #1b2634;
+      --hover: #202d3d;
+      --shadow: rgba(0, 0, 0, 0.55);
+      --halo: rgba(6, 12, 20, 0.78);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; }
+    /* iOS Safari: stop it inflating text in landscape. */
+    html { -webkit-text-size-adjust: 100%; }
     body {
       font-family: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
       background: var(--bg);
@@ -26,11 +65,15 @@
       display: flex;
       flex-direction: column;
       min-height: 100vh;
+      /* dvh tracks the collapsing Safari toolbar so the controls stay put. */
+      min-height: 100dvh;
     }
     header {
       background: linear-gradient(120deg, var(--brand-deep) 0%, var(--brand) 90%);
       color: #fff;
-      padding: 20px 24px;
+      /* env() keeps content clear of the notch / Dynamic Island. */
+      padding: calc(20px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right))
+        20px calc(24px + env(safe-area-inset-left));
       box-shadow: 0 2px 14px rgba(11, 47, 91, 0.25);
     }
     .banner-inner {
@@ -85,18 +128,21 @@
       flex: 1;
       min-height: 420px;
       width: 100%;
+      /* Match the theme so the area beyond the tiles isn't Leaflet's grey. */
+      background: var(--bg);
     }
     .map-wrap { position: relative; flex: 1; display: flex; min-height: 420px; }
     footer {
-      padding: 10px 24px;
+      padding: 10px calc(24px + env(safe-area-inset-right))
+        calc(10px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
       font-size: 0.72rem;
       color: var(--muted);
       display: flex;
       justify-content: space-between;
       flex-wrap: wrap;
       gap: 6px;
-      background: #fff;
-      border-top: 1px solid #e6eaf2;
+      background: var(--card);
+      border-top: 1px solid var(--border);
     }
     /* stop pins */
     .stop-pin-wrap { background: transparent; border: none; }
@@ -168,9 +214,9 @@
       top: 10px;
       right: 10px;
       z-index: 1000;
-      background: #fff;
+      background: var(--card);
       border-radius: 10px;
-      box-shadow: 0 2px 10px rgba(16, 36, 62, 0.18);
+      box-shadow: 0 2px 10px var(--shadow);
       padding: 8px 12px;
       font-size: 0.75rem;
       color: var(--ink);
@@ -180,19 +226,22 @@
     }
     .legend span { display: flex; align-items: center; gap: 6px; }
     .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex: none; }
-    .legend .swatch.waypoint { background: #fff; border: 2px solid #1a73e8; width: 8px; height: 8px; }
-    .legend .swatch.offroad { background: #fbbf24; border: 2px solid #a16207; width: 8px; height: 8px; }
     .legend .swatch.stop { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
-    .legend .swatch.dir { width: 0; height: 0; border: none; border-radius: 0; border-left: 8px solid #0b2f5b; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+    .legend .swatch.dir { width: 0; height: 0; border: none; border-radius: 0; border-left: 8px solid var(--muted); border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+    .legend .swatch.cluster {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: rgba(21, 122, 140, 0.22); border: 1px solid var(--brand);
+    }
+    .legend .swatch-icon { font-style: normal; font-size: 12px; line-height: 1; width: 14px; text-align: center; flex: none; }
     .legend-title { font-weight: 700; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
     .day-toggles { display: flex; flex-wrap: wrap; gap: 4px; max-width: 230px; }
     .day-toggle {
       display: inline-flex; align-items: center; gap: 5px;
-      border: 1px solid #dde4ee; background: #fff; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--card); border-radius: 999px;
       padding: 3px 9px; font-size: 0.7rem; font-weight: 600; color: var(--ink);
       cursor: pointer; transition: opacity 0.15s ease, background 0.15s ease;
     }
-    .day-toggle:hover { background: #f2f6fc; }
+    .day-toggle:hover { background: var(--hover); }
     .day-toggle.off { opacity: 0.35; text-decoration: line-through; }
     .day-toggle .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
     /* share actions */
@@ -219,12 +268,13 @@
     .anim-controls {
       position: absolute;
       left: 50%;
-      bottom: 14px;
+      /* Cleared above the iOS home indicator. */
+      bottom: calc(14px + env(safe-area-inset-bottom));
       transform: translateX(-50%);
       z-index: 1000;
-      background: #fff;
+      background: var(--card);
       border-radius: 12px;
-      box-shadow: 0 2px 12px rgba(16, 36, 62, 0.2);
+      box-shadow: 0 2px 12px var(--shadow);
       padding: 8px 12px;
       display: flex;
       align-items: center;
@@ -246,12 +296,12 @@
     }
     .anim-controls button:hover { background: var(--brand-deep); }
     .anim-controls select {
-      border: 1px solid #d5dce8;
+      border: 1px solid var(--border);
       border-radius: 6px;
       padding: 3px 6px;
       font-size: 0.72rem;
       color: var(--ink);
-      background: #fff;
+      background: var(--field);
     }
     .anim-controls input[type="range"] {
       width: 170px;
@@ -262,7 +312,7 @@
     .anim-controls .anim-label-sub { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
     .car-icon .car-body { filter: drop-shadow(0 3px 5px rgba(16, 36, 62, 0.4)); transform-origin: center; will-change: transform; }
     .dir-arrow { background: transparent; border: none; }
-    .dir-arrow svg { filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.85)); }
+    .dir-arrow svg { filter: drop-shadow(0 0 2px var(--halo)); }
     /* empty state */
     .empty-note {
       position: absolute;
@@ -270,16 +320,47 @@
       left: 50%;
       transform: translate(-50%, -50%);
       z-index: 1000;
-      background: #fff;
+      background: var(--card);
       border-radius: 12px;
-      box-shadow: 0 6px 24px rgba(16, 36, 62, 0.2);
+      box-shadow: 0 6px 24px var(--shadow);
       padding: 14px 20px;
       font-size: 0.9rem;
       color: var(--muted);
       pointer-events: none;
     }
+    /* POI icons (waypoints / off-road spots) */
+    .poi-icon-wrap { background: transparent; border: none; }
+    .poi-icon {
+      display: flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; font-size: 17px; line-height: 1;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+    }
+    /* Off-road spots are rare, so make them read louder than the 📷 pins. */
+    .poi-icon.offroad {
+      font-size: 21px;
+      filter: drop-shadow(0 0 3px var(--halo)) drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+    }
+    .anim-controls button.reset { background: var(--muted); }
+    .anim-controls button.reset:hover { background: var(--brand-deep); }
+    /* Dark-mode polish for Leaflet's own UI */
+    html.dark .leaflet-popup-content-wrapper,
+    html.dark .leaflet-popup-tip { background: var(--card); color: var(--ink); }
+    html.dark .leaflet-bar a,
+    html.dark .leaflet-control-attribution { background: var(--card); color: var(--ink); border-color: var(--border); }
+    html.dark .marker-cluster-small,
+    html.dark .marker-cluster-medium,
+    html.dark .marker-cluster-large { background: rgba(56, 198, 217, 0.28); }
+    html.dark .marker-cluster div { background: rgba(16, 26, 38, 0.92); color: var(--ink); }
+    html.dark .stop-pin { border-color: rgba(10, 16, 23, 0.9); }
+    /* Without a CARTO key there is no dark basemap style, so invert OSM tiles. */
+    html.dark .tiles-fallback .leaflet-tile-pane {
+      filter: invert(1) hue-rotate(180deg) brightness(0.93) contrast(0.9) saturate(0.6);
+    }
     @media (max-width: 640px) {
-      header { padding: 14px 16px; }
+      header {
+        padding: calc(14px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+          14px calc(16px + env(safe-area-inset-left));
+      }
       .title-block h1 { font-size: 1.25rem; }
       .stat { min-width: 72px; padding: 8px 10px; }
       .stat .value { font-size: 1rem; }
@@ -309,6 +390,7 @@
         <div class="stat"><span class="value">{{ media_count }}</span><span class="label">Media</span></div>
       </div>
       <div class="share-actions">
+        <button id="btn-theme" type="button" title="Toggle dark mode">🌙 Dark</button>
         <button id="btn-share" type="button" title="Copy a link to this report">🔗 Share</button>
         <button id="btn-download" type="button" title="Download this report as a single HTML file">⬇ Download</button>
       </div>
@@ -320,13 +402,15 @@
     <div class="legend">
       <span class="legend-title">Days · {{ day_count }}</span>
       <div class="day-toggles" id="day-toggles"></div>
-      <span><i class="swatch waypoint"></i> Waypoint</span>
-      <span><i class="swatch offroad"></i> Off-road spot</span>
-      <span><i class="swatch stop"></i> Stop</span>
+      <span><i class="swatch-icon">📷</i> Waypoint</span>
+      <span><i class="swatch-icon">🏔️</i> Off-road spot</span>
+      <span><i class="swatch stop"></i> Stop · numbered pin</span>
+      <span><i class="swatch cluster"></i> Cluster · nearby photos</span>
       <span><i class="swatch dir"></i> Direction</span>
     </div>
     <div class="anim-controls" id="anim-controls" style="display:none">
       <button id="anim-play" title="Play / pause">▶</button>
+      <button id="anim-reset" class="reset" title="Restart the journey from the beginning">⟲</button>
       <select id="anim-speed" title="Animation speed">
         <option value="0.02">Crawl</option>
         <option value="0.05">Very Slow</option>
@@ -350,8 +434,12 @@
   </footer>
 
   <script id="trip-data" type="application/json">{{ trip_json | safe }}</script>
+{% if vendor_js %}
+  <script>{{ vendor_js | safe }}</script>
+{% else %}
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+{% endif %}
   <script>
     (function () {
       var data = JSON.parse(document.getElementById('trip-data').textContent);
@@ -391,7 +479,10 @@
           var a = assets[f];
           if (!a) return;
           if (a.thumb) {
-            html += '<a href="' + esc(a.url) + '" target="_blank"><img src="' + esc(a.thumb) + '" loading="lazy" alt=""></a>';
+            // Single-file reports embed the photo in ``thumb`` and leave
+            // ``url`` empty, so fall back to it rather than emitting an empty href.
+            var href = a.url || a.thumb;
+            html += '<a href="' + esc(href) + '" target="_blank"><img src="' + esc(a.thumb) + '" loading="lazy" alt=""></a>';
           } else if (a.kind === 'video') {
             html += '<a class="vid" href="' + esc(a.url) + '" target="_blank" title="' + esc(f) + '">▶</a>';
           }
@@ -401,17 +492,46 @@
       }
 
       var map = L.map('map', { scrollWheelZoom: true }).setView([20, 0], 2);
-{% if carto_key %}
-      L.tileLayer('https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=' + {{ carto_key|tojson }}, {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        maxZoom: 19
-      }).addTo(map);
-{% else %}
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-        maxZoom: 19
-      }).addTo(map);
-{% endif %}
+
+      // ---- theme + basemap (light / dark) ----
+      var CARTO_KEY = {% if carto_key %}{{ carto_key|tojson }}{% else %}null{% endif %};
+      var THEME_KEY = 'route-recap-theme';
+      var tileLayer = null;
+      function isDark() { return document.documentElement.classList.contains('dark'); }
+      function tileUrl(dark) {
+        if (CARTO_KEY) {
+          return 'https://basemaps.cartocdn.com/rastertiles/'
+            + (dark ? 'dark_all' : 'voyager') + '/{z}/{x}/{y}.png?key=' + CARTO_KEY;
+        }
+        return 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+      }
+      function applyBasemap() {
+        var dark = isDark();
+        if (tileLayer) map.removeLayer(tileLayer);
+        tileLayer = L.tileLayer(tileUrl(dark), {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            + (CARTO_KEY ? ' &copy; <a href="https://carto.com/attributions">CARTO</a>' : ''),
+          maxZoom: 19
+        }).addTo(map);
+        // Without CARTO's dark style there is no dark basemap to switch to,
+        // so flag the map so CSS can invert the OSM tiles instead.
+        document.getElementById('map').classList.toggle('tiles-fallback', !CARTO_KEY);
+      }
+      function applyTheme(dark, persist) {
+        document.documentElement.classList.toggle('dark', dark);
+        var btn = document.getElementById('btn-theme');
+        if (btn) {
+          btn.textContent = dark ? '☀️ Light' : '🌙 Dark';
+          btn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        }
+        if (persist) { try { localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light'); } catch (e) {} }
+        applyBasemap();
+      }
+      var themeBtn = document.getElementById('btn-theme');
+      if (themeBtn) {
+        themeBtn.addEventListener('click', function () { applyTheme(!isDark(), true); });
+      }
+      applyTheme(isDark(), false);
 
       // Marker clustering keeps the map readable with hundreds of stops;
       // falls back to plain markers if the plugin cannot load.
@@ -437,6 +557,9 @@
       var dayCount = 1;
       var dayLayers = {};   // day -> [polyline, ...]
       var visibleDays = {}; // day -> bool (default true)
+      // The full route is the "overview". Once the drive animation starts we
+      // hide it and reveal the route behind the car instead (see renderTrail).
+      var staticRouteVisible = true;
       (data.segments || []).forEach(function (seg) {
         var day = (seg.day_index == null) ? 0 : seg.day_index;
         if (day + 1 > dayCount) dayCount = day + 1;
@@ -492,10 +615,20 @@
       }
       function setDayVisible(day, visible) {
         (dayLayers[day] || []).forEach(function (p) {
-          if (visible) p.addTo(map); else p.remove();
+          if (visible && staticRouteVisible) p.addTo(map); else p.remove();
         });
-        if (traveledLine) traveledLine.bringToFront();
         setupAnimation();
+      }
+
+      // ---- POI icons: emoji markers instead of plain dots ----
+      function poiIcon(emoji, cls) {
+        return L.divIcon({
+          className: 'poi-icon-wrap',
+          html: '<span class="poi-icon' + (cls ? ' ' + cls : '') + '">' + emoji + '</span>',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+          popupAnchor: [0, -12]
+        });
       }
 
       (data.waypoints || []).forEach(function (wp) {
@@ -506,12 +639,8 @@
           if (wp.timestamp) pop += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
           pop += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
           pop += assetStrip(wp.source_files, 4) + '</div>';
-          addMarker(L.circleMarker([wp.latitude, wp.longitude], {
-            radius: 6,
-            color: '#a16207',
-            fillColor: '#fbbf24',
-            fillOpacity: 0.95,
-            weight: 2
+          addMarker(L.marker([wp.latitude, wp.longitude], {
+            icon: poiIcon('🏔️', 'offroad'), title: 'Off-road spot'
           }).bindPopup(pop), false);
           return;
         }
@@ -519,12 +648,8 @@
         if (wp.timestamp) pop2 += '<p class="times">' + fmtTime(wp.timestamp) + '</p>';
         pop2 += '<p class="count">' + (wp.media_count || 1) + (wp.media_count === 1 ? ' photo' : ' photos') + '</p>';
         pop2 += assetStrip(wp.source_files, 3) + '</div>';
-        addMarker(L.circleMarker([wp.latitude, wp.longitude], {
-          radius: 4,
-          color: '#1a73e8',
-          fillColor: '#ffffff',
-          fillOpacity: 1,
-          weight: 2
+        addMarker(L.marker([wp.latitude, wp.longitude], {
+          icon: poiIcon('📷'), title: 'Waypoint'
         }).bindPopup(pop2), false);
       });
 
@@ -546,7 +671,10 @@
         }
         html += '<p class="count">' + stop.media_count + (stop.media_count === 1 ? ' photo' : ' photos') + '</p>';
         html += assetStrip(stop.source_files, 6) + '</div>';
-        addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon }).bindPopup(html), true);
+        // Tooltip spells out what the numbered pin stands for.
+        addMarker(L.marker([stop.latitude, stop.longitude], { icon: icon, title: 'Stop ' + (i + 1) })
+          .bindTooltip('Stop ' + (i + 1) + (stop.name ? ' · ' + title : ''), { direction: 'top', offset: [0, -26] })
+          .bindPopup(html), true);
       });
 
       // ---- share & download (self-contained HTML) ----
@@ -576,12 +704,27 @@
       if (shareBtn) {
         shareBtn.addEventListener('click', function () {
           var url = location.href;
-          function done() { toast('Link copied — share it anywhere'); }
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(url).then(done, function () { fallbackCopy(url, done); });
-          } else {
-            fallbackCopy(url, done);
+          var title = data.trip_name || 'Trip';
+          function copied() { toast('Link copied — share it anywhere'); }
+          function copyFallback() {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(url).then(copied, function () { fallbackCopy(url, copied); });
+            } else {
+              fallbackCopy(url, copied);
+            }
           }
+          // iOS Safari: the Web Share API opens the native share sheet
+          // (AirDrop, Messages, Save to Files). Preferred on iPhone because
+          // navigator.clipboard needs a secure context and is unavailable on
+          // a plain http:// LAN address.
+          if (navigator.share) {
+            navigator.share({ title: title, url: url }).catch(function (err) {
+              if (err && err.name === 'AbortError') return;  // user dismissed
+              copyFallback();
+            });
+            return;
+          }
+          copyFallback();
         });
       }
       var dlBtn = document.getElementById('btn-download');
@@ -614,7 +757,16 @@
         + '<rect x="83.5" y="27" width="3" height="5" rx="1.2" fill="#ffd97a"/>'
         + '<rect x="7" y="27" width="2.4" height="4" rx="1" fill="#ff8d6b"/>'
         + '</svg></div>';
-      var ARROW_SVG = '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M4 3 L12 8 L4 13 Z" fill="#0b2f5b" fill-opacity="0.55"/></svg>';
+      // Direction arrows carry their day's route color. The heading is baked
+      // into the SVG so an arrow renders correctly without being attached to
+      // the DOM first (it rotates instantly on re-add).
+      function arrowSvg(color, bearing) {
+        var rot = (isFinite(bearing) ? bearing - 90 : 0);
+        return '<svg width="15" height="15" viewBox="0 0 16 16">'
+          + '<path d="M5 3.2 L12.6 8 L5 12.8 Z" fill="' + color + '" fill-opacity="0.85"'
+          + ' stroke="' + color + '" stroke-width="1.1" stroke-linejoin="round"'
+          + ' transform="rotate(' + rot.toFixed(1) + ' 8 8)"/></svg>';
+      }
 
       function bearingDeg(a, b) {
         var dLon = (b.lon - a.lon) * Math.PI / 180;
@@ -623,19 +775,23 @@
         var x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
         return Math.atan2(y, x) * 180 / Math.PI;
       }
-      function rotateEl(el, deg) {
-        if (el) el.style.transform = 'rotate(' + deg + 'deg)';
-      }
       function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
       // Build a monotonic (progress, position) track from route segments.
-      // Time mode: interpolated timestamps along each segment, holding the
-      // car still during stops (gaps between segments). Distance mode:
-      // fallback when waypoint timestamps are missing.
+      //
+      // Pacing is deliberately *not* the raw photo timestamps: the car moves at
+      // a constant nominal speed and each stop becomes a short, capped pause.
+      // Using real elapsed time made the car crawl through long overnight
+      // gaps and then rocket through segments whose two photos were seconds
+      // apart, which felt erratic. ``realMs`` is carried on every point so the
+      // clock/day label still reflects the true trip timeline.
+      //
       // Each track point carries its trip ``day`` and a ``pi`` index into
       // ``routePath`` (the full driven geometry) so the animation can draw
       // the traveled portion and recolor by day. Segments of hidden days
       // are skipped — the car teleports across them instead of driving.
+      var NOMINAL_KMH = 90;   // animation travel pace, independent of timestamps
+      var MAX_PAUSE_S = 120;  // longest on-screen pause for a stop
       function buildTrack() {
         var segs = data.segments || [];
         var wps = data.waypoints || [];
@@ -651,11 +807,13 @@
         }
         var track = [];
         var routePath = [];
+        var routeDays = [];  // parallel to routePath: the trip day of each point
         var pathIndex = 0;
         var prevDay = 0;
-        function appendCoords(coords) {
+        function appendCoords(coords, day) {
           // Append segment geometry to routePath (dedupe consecutive
-          // duplicates) and return the pi for each coordinate.
+          // duplicates) and return the pi for each coordinate. routeDays
+          // stays parallel so the revealed trail can be colored by day.
           var pis = [];
           for (var c = 0; c < coords.length; c++) {
             var last = routePath[routePath.length - 1];
@@ -663,6 +821,7 @@
               pis.push(pathIndex - 1);
             } else {
               routePath.push(coords[c]);
+              routeDays.push(day);
               pis.push(pathIndex);
               pathIndex++;
             }
@@ -670,57 +829,60 @@
           return pis;
         }
         if (timed) {
-          var prevEnd = null, prevPos = null, tMax = 0, kmSoFar = 0;
+          var prevPos = null, prevRealEnd = null, av = 0, kmSoFar = 0;
           var hadHidden = false;
+          var lastPi = 0;
           segs.forEach(function (s) {
             var day = (s.day_index == null) ? 0 : s.day_index;
             var coords = decodePolyline(s.encoded_polyline || '');
             if (coords.length < 2) return;
             if (visibleDays[day] === false) { hadHidden = true; return; }
-            var startT = (Date.parse(wps[s.start_index].timestamp) - t0) / 1000;
-            var endT = (Date.parse(wps[s.end_index].timestamp) - t0) / 1000;
-            // Use REAL elapsed time so the clock, day counter, and stop
-            // windows line up with the actual trip timeline.
-            var dur = Math.max(endT - startT, 1);
-            var segEnd = startT + dur;
-            if (prevPos && startT > prevEnd) {
-              // Gap between segments. Hidden day(s) in between: teleport
-              // (same v, jump position). Otherwise, if the next segment
-              // starts at a different position (a disjoint), drive straight
-              // across the gap so the car never teleports; else hold still.
-              var nextStart = coords[0];
-              if (hadHidden) {
-                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
-                track.push({ v: prevEnd, lat: nextStart[0], lon: nextStart[1], km: kmSoFar, day: day, pi: pathIndex, teleport: true });
-              } else if (prevPos[0] !== nextStart[0] || prevPos[1] !== nextStart[1]) {
-                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
-                track.push({ v: startT, lat: nextStart[0], lon: nextStart[1], km: kmSoFar, day: day, pi: pathIndex });
-              } else {
-                track.push({ v: prevEnd, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: pathIndex - 1 });
-                track.push({ v: startT, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: day, pi: pathIndex - 1 });
-              }
-            }
-            var coordPi = appendCoords(coords);
+            var tA = Date.parse(wps[s.start_index].timestamp);
+            var tB = Date.parse(wps[s.end_index].timestamp);
             var dists = [], totalD = 0;
             for (var i = 1; i < coords.length; i++) {
               var d = map.distance(coords[i - 1], coords[i]);
               dists.push(d); totalD += d;
             }
+            var travelT = Math.max((totalD / 1000) / NOMINAL_KMH * 3600, 0.5);
+            if (prevPos) {
+              // Gap between segments. Hidden day(s) in between: teleport (same
+              // v, jump position). If the car has to move (a disjoint), pace it
+              // by distance like real driving; otherwise hold still for a
+              // capped pause so a stop is visible without stalling the replay.
+              var gapDist = map.distance(prevPos, coords[0]);
+              var moving = gapDist > 5 && !hadHidden;
+              var holdT = moving
+                ? Math.max((gapDist / 1000) / NOMINAL_KMH * 3600, 0.2)
+                : Math.min(Math.max((tA - prevRealEnd) / 1000, 0), MAX_PAUSE_S);
+              var endLat = moving ? coords[0][0] : prevPos[0];
+              var endLon = moving ? coords[0][1] : prevPos[1];
+              track.push({ v: av, lat: prevPos[0], lon: prevPos[1], km: kmSoFar, day: prevDay, pi: lastPi, realMs: prevRealEnd });
+              track.push({ v: av + holdT, lat: endLat, lon: endLon, km: kmSoFar, day: day, pi: pathIndex, realMs: tA, teleport: hadHidden || undefined });
+              av += holdT;
+            }
+            var coordPi = appendCoords(coords, day);
             var cum = 0;
             for (var j = 0; j < coords.length; j++) {
               if (j > 0) cum += dists[j - 1];
               var frac = totalD > 0 ? cum / totalD : 0;
-              var v = startT + dur * frac;
-              track.push({ v: v, lat: coords[j][0], lon: coords[j][1], km: kmSoFar + cum / 1000, day: day, pi: coordPi[j] });
-              if (v > tMax) tMax = v;
+              track.push({
+                v: av + travelT * frac,
+                lat: coords[j][0], lon: coords[j][1],
+                km: kmSoFar + cum / 1000, day: day, pi: coordPi[j],
+                realMs: tA + (tB - tA) * frac
+              });
             }
-            prevEnd = segEnd; prevPos = coords[coords.length - 1];
+            av += travelT;
+            prevPos = coords[coords.length - 1];
+            prevRealEnd = tB;
             prevDay = day;
+            lastPi = pathIndex - 1;
             kmSoFar += totalD / 1000;
             hadHidden = false;
           });
           track.sort(function (x, y) { return x.v - y.v; });
-          return { mode: 'time', track: track, max: Math.max(tMax, 1), t0: t0, routePath: routePath };
+          return { mode: 'time', track: track, max: Math.max(av, 1), t0: t0, routePath: routePath, routeDays: routeDays };
         }
         var km = 0;
         var hadHidden = false;
@@ -735,7 +897,7 @@
             track.push({ v: lastPt.v, lat: coords[0][0], lon: coords[0][1], km: lastPt.km, day: day, pi: pathIndex, teleport: true });
             hadHidden = false;
           }
-          var coordPi = appendCoords(coords);
+          var coordPi = appendCoords(coords, day);
           var dists = [], totalD = 0;
           for (var i = 1; i < coords.length; i++) {
             var d = map.distance(coords[i - 1], coords[i]);
@@ -748,49 +910,58 @@
           }
           km += totalD / 1000;
         });
-        return { mode: 'dist', track: track, max: Math.max(km, 1), t0: 0, routePath: routePath };
+        return { mode: 'dist', track: track, max: Math.max(km, 1), t0: 0, routePath: routePath, routeDays: routeDays };
       }
 
+      // Place arrows at an even distance interval along the whole route, so
+      // spacing is consistent regardless of how the route is split into
+      // segments (per-segment placement used to bunch arrows on short legs and
+      // leave long legs bare). Kept deliberately sparse (~one per 60 km on a
+      // country-scale trip) so the route stays legible.
+      var ARROW_TARGET = 34;
+      var ARROW_MIN_SPACING_KM = 3;
+      var ARROW_MAX_SPACING_KM = 60;
       function addArrows() {
-        var cap = 120, placed = 0;
-        (data.segments || []).forEach(function (seg) {
-          if (placed >= cap) return;
-          var day = (seg.day_index == null) ? 0 : seg.day_index;
-          if (visibleDays[day] === false) return;
-          var coords = decodePolyline(seg.encoded_polyline || '');
-          if (coords.length < 2) return;
-          var dists = [], totalD = 0;
-          for (var i = 1; i < coords.length; i++) {
-            var d = map.distance(coords[i - 1], coords[i]);
-            dists.push(d); totalD += d;
+        var path = anim && anim.routePath, days = anim && anim.routeDays;
+        if (!path || path.length < 2) return;
+        var cum = [0];
+        for (var i = 1; i < path.length; i++) {
+          cum.push(cum[i - 1] + map.distance(path[i - 1], path[i]));
+        }
+        var total = cum[cum.length - 1];
+        if (total <= 0) return;
+        var spacingKm = Math.min(ARROW_MAX_SPACING_KM,
+          Math.max(ARROW_MIN_SPACING_KM, (total / 1000) / ARROW_TARGET));
+        var spacing = spacingKm * 1000;
+        var cap = 140, placed = 0;
+        for (var target = spacing; target < total && placed < cap; target += spacing) {
+          var lo = 0, hi = cum.length - 1;
+          while (hi - lo > 1) {
+            var mid = (lo + hi) >> 1;
+            if (cum[mid] <= target) lo = mid; else hi = mid;
           }
-          var km = totalD / 1000;
-          var n = km > 12 ? 4 : km > 4 ? 3 : km > 1 ? 2 : 1;
-          for (var k = 1; k <= n && placed < cap; k++) {
-            var target = totalD * k / (n + 1);
-            var cum = 0, idx = 0;
-            for (var j = 0; j < dists.length; j++) {
-              cum += dists[j];
-              if (cum >= target) { idx = j + 1; break; }
-            }
-            if (idx === 0) continue;
-            var a = coords[idx - 1], b = coords[idx];
-            var before = cum - dists[idx - 1];
-            var frac = dists[idx - 1] ? (target - before) / dists[idx - 1] : 0;
-            var lat = a[0] + (b[0] - a[0]) * frac;
-            var lon = a[1] + (b[1] - a[1]) * frac;
-            var ic = L.divIcon({ className: 'dir-arrow', html: ARROW_SVG, iconSize: [16, 16], iconAnchor: [8, 8] });
-            var m = L.marker([lat, lon], { icon: ic, interactive: false }).addTo(map);
-            rotateEl(m.getElement().querySelector('svg'), bearingDeg(a, b) - 90);
-            arrowMarkers.push(m);
-            placed++;
-          }
-        });
+          if (lo < 1) continue;
+          var day = (days && days[lo] != null) ? days[lo] : 0;
+          if (visibleDays[day] === false) continue;
+          var a = path[lo - 1], b = path[lo];
+          var segLen = cum[lo] - cum[lo - 1];
+          var f = segLen > 0 ? (target - cum[lo - 1]) / segLen : 0;
+          var lat = a[0] + (b[0] - a[0]) * f;
+          var lon = a[1] + (b[1] - a[1]) * f;
+          var bearing = bearingDeg({ lat: a[0], lon: a[1] }, { lat: b[0], lon: b[1] });
+          var ic = L.divIcon({
+            className: 'dir-arrow', html: arrowSvg(dayColor(day), bearing),
+            iconSize: [15, 15], iconAnchor: [7.5, 7.5]
+          });
+          var m = L.marker([lat, lon], { icon: ic, interactive: false });
+          if (staticRouteVisible) m.addTo(map);
+          arrowMarkers.push(m);
+          placed++;
+        }
       }
 
       var anim = null;
       var car = null;
-      var traveledLine = null;
       var arrowMarkers = [];
       var rafId = null;
 
@@ -801,30 +972,12 @@
       var labelMain = document.getElementById('anim-label-main');
       var labelSub = document.getElementById('anim-label-sub');
 
-      var LOOKAHEAD_M = 15;
-      function angleDiff(a, b) { return ((b - a + 540) % 360) - 180; }
-      function headingAt(p) {
-        var t = anim.track;
-        if (p.lo >= t.length - 1) return null;
-        var from = L.latLng(p.lat, p.lon);
-        var acc = 0;
-        for (var j = p.lo; j < t.length - 1; j++) {
-          var nxt = L.latLng(t[j + 1].lat, t[j + 1].lon);
-          acc += from.distanceTo(nxt);
-          from = nxt;
-          if (acc >= LOOKAHEAD_M) {
-            return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: nxt.lat, lon: nxt.lng });
-          }
-        }
-        return bearingDeg({ lat: p.lat, lon: p.lon }, { lat: t[t.length - 1].lat, lon: t[t.length - 1].lon });
-      }
-
       function posAt(v) {
         var t = anim.track;
-        if (v <= t[0].v) return { v: t[0].v, lat: t[0].lat, lon: t[0].lon, a: t[0], b: t[0], lo: 0, km: t[0].km, pi: t[0].pi, day: t[0].day };
+        if (v <= t[0].v) return { v: t[0].v, lat: t[0].lat, lon: t[0].lon, a: t[0], b: t[0], lo: 0, km: t[0].km, pi: t[0].pi, day: t[0].day, realMs: t[0].realMs };
         if (v >= t[t.length - 1].v) {
           var e = t[t.length - 1];
-          return { v: e.v, lat: e.lat, lon: e.lon, a: e, b: e, lo: t.length - 1, km: e.km, pi: e.pi, day: e.day };
+          return { v: e.v, lat: e.lat, lon: e.lon, a: e, b: e, lo: t.length - 1, km: e.km, pi: e.pi, day: e.day, realMs: e.realMs };
         }
         var lo = 0, hi = t.length - 1;
         while (hi - lo > 1) {
@@ -834,11 +987,13 @@
         var a = t[lo], b = t[hi];
         if (a.v === b.v) {
           // Stop-hold or teleport: snap to the later point.
-          return { v: v, lat: b.lat, lon: b.lon, a: a, b: b, lo: lo, km: b.km, pi: b.pi, day: b.day };
+          return { v: v, lat: b.lat, lon: b.lon, a: a, b: b, lo: lo, km: b.km, pi: b.pi, day: b.day, realMs: b.realMs };
         }
         var span = (b.v - a.v) || 1;
         var f = (v - a.v) / span;
-        return { v: v, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, a: a, b: b, lo: lo, km: a.km + (b.km - a.km) * f, pi: a.pi, day: a.day };
+        var realMs = (a.realMs != null && b.realMs != null)
+          ? a.realMs + (b.realMs - a.realMs) * f : null;
+        return { v: v, lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f, a: a, b: b, lo: lo, km: a.km + (b.km - a.km) * f, pi: a.pi, day: a.day, realMs: realMs };
       }
 
       var carIcon = L.divIcon({
@@ -863,7 +1018,9 @@
       function nextStopInfo(p) {
         var stops = data.stops || [];
         if (!stops.length) return null;
-        var nowMs = anim.mode === 'time' ? anim.t0 + anim.current * 1000 : null;
+        // Compare against the track point's REAL timestamp, not the (paced)
+        // animation clock, so At/Next stays honest.
+        var nowMs = (anim.mode === 'time' && p.realMs != null) ? p.realMs : null;
         var best = null;
         for (var i = 0; i < stops.length; i++) {
           var s = stops[i];
@@ -883,7 +1040,8 @@
       function animLabel(p) {
         var main, sub = '';
         if (anim.mode === 'time') {
-          var d = new Date(anim.t0 + anim.current * 1000);
+          var ms = (p.realMs != null) ? p.realMs : anim.t0 + anim.current * 1000;
+          var d = new Date(ms);
           var day = (p.day == null ? 0 : p.day) + 1;
           main = '<span style="color:' + dayColor(p.day) + ';font-weight:700">Day ' + day + '</span> · '
             + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ' · ' + fmtKm(p.km);
@@ -895,31 +1053,45 @@
         return { main: main, sub: sub };
       }
       function stepPerSec() { return anim.max * anim.pct / 100; }
+      // Reveal the geometry behind the car, colored by the day it belongs to.
+      // routePath is split into contiguous per-day "runs"; a run's polyline is
+      // extended as the car advances and dropped again if it is scrubbed back.
+      function renderTrail(p) {
+        var k = Math.max(0, Math.min(p.pi, anim.routePath.length - 1));
+        for (var r = 0; r < anim.trailRuns.length; r++) {
+          var run = anim.trailRuns[r];
+          var want = k >= run.start ? Math.min(k, run.end) - run.start + 1 : 0;
+          if (want === run.drawn) continue;
+          run.drawn = want;
+          if (want < 2) {
+            if (run.polyline) { map.removeLayer(run.polyline); run.polyline = null; }
+            continue;
+          }
+          var pts = anim.routePath.slice(run.start, run.start + want);
+          // Extend the run's tip to the car's live position.
+          if (k >= run.start && k <= run.end) pts.push([p.lat, p.lon]);
+          if (!run.polyline) {
+            run.polyline = L.polyline(pts, {
+              color: dayColor(run.day), weight: 5.5, opacity: 0.98,
+              lineJoin: 'round', lineCap: 'round'
+            }).addTo(map);
+          } else {
+            run.polyline.setLatLngs(pts);
+          }
+        }
+      }
       function syncAnim() {
         var p = posAt(anim.current);
         car.setLatLng([p.lat, p.lon]);
-        // Parked (stop hold): keep the arrival heading instead of spinning.
-        var parked = p.a && p.b && p.a.lat === p.b.lat && p.a.lon === p.b.lon;
-        if (!parked) {
-          var bearing = headingAt(p);
-          if (bearing !== null && isFinite(bearing)) {
-            // Smooth turns while playing; snap instantly when scrubbing.
-            var factor = anim.playing ? 0.3 : 1;
-            anim.heading += angleDiff(anim.heading, bearing - 90) * factor;
-          }
-        }
-        rotateEl(car.getElement().querySelector('.car-body'), anim.heading);
-        // Traveled portion: a gray line from the trip start to the car,
-        // leaving the upcoming route in its day colors. Updated only when
-        // the car crosses a route point (or while scrubbing) to stay smooth.
-        if (traveledLine && anim.routePath && anim.routePath.length) {
-          var k = Math.max(0, Math.min(p.pi, anim.routePath.length - 1));
-          if (k !== anim.lastK || anim.dragging) {
-            anim.lastK = k;
-            var pts = anim.routePath.slice(0, k + 1);
-            pts.push([p.lat, p.lon]);
-            traveledLine.setLatLngs(pts);
-          }
+        // The car stays upright on screen; travel direction is shown by the
+        // arrows. While driving, the full route is hidden and only what the
+        // car has already covered is drawn, so the line grows in behind it.
+        var driving = anim.playing || anim.current > 0;
+        setStaticRouteVisible(!driving);
+        var k = Math.max(0, Math.min(p.pi, anim.routePath.length - 1));
+        if (k !== anim.lastK || anim.dragging) {
+          anim.lastK = k;
+          renderTrail(p);
         }
         var lbl = animLabel(p);
         labelMain.innerHTML = lbl.main;
@@ -945,18 +1117,49 @@
         arrowMarkers.forEach(function (m) { map.removeLayer(m); });
         arrowMarkers = [];
       }
+      // Toggle the whole static route (day polylines + arrows) as one unit.
+      function setStaticRouteVisible(visible) {
+        if (visible === staticRouteVisible) return;
+        staticRouteVisible = visible;
+        for (var day in dayLayers) {
+          var show = visible && visibleDays[day] !== false;
+          dayLayers[day].forEach(function (p) {
+            if (show) { if (!map.hasLayer(p)) p.addTo(map); }
+            else p.remove();
+          });
+        }
+        arrowMarkers.forEach(function (m) {
+          if (visible) { if (!map.hasLayer(m)) m.addTo(map); }
+          else map.removeLayer(m);
+        });
+      }
       // (Re)build the animation from the currently visible days. Called once
       // on load and again whenever a day is toggled in the legend.
       function setupAnimation() {
         clearArrows();
         if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
         if (car) { map.removeLayer(car); car = null; }
-        if (traveledLine) { map.removeLayer(traveledLine); traveledLine = null; }
+        if (anim && anim.trailRuns) {
+          anim.trailRuns.forEach(function (run) {
+            if (run.polyline) map.removeLayer(run.polyline);
+          });
+        }
         var info = buildTrack();
         if (!info || info.track.length < 2) {
           anim = null;
           controls.style.display = 'none';
+          setStaticRouteVisible(true);
           return;
+        }
+        // Split the driven geometry into contiguous per-day runs.
+        var trailRuns = [];
+        for (var i = 0; i < info.routeDays.length; i++) {
+          var last = trailRuns[trailRuns.length - 1];
+          if (!last || last.day !== info.routeDays[i]) {
+            trailRuns.push({ day: info.routeDays[i], start: i, end: i, drawn: 0, polyline: null });
+          } else {
+            last.end = i;
+          }
         }
         anim = {
           track: info.track,
@@ -964,25 +1167,16 @@
           t0: info.t0,
           max: info.max,
           routePath: info.routePath,
+          routeDays: info.routeDays,
+          trailRuns: trailRuns,
           current: 0,
           pct: parseFloat(speedSel.value) || 1,
           playing: false,
           dragging: false,
           lastFrame: null,
-          heading: 0,
           lastK: -1
         };
-        (function () {
-          var t = anim.track;
-          for (var i = 0; i < t.length - 1; i++) {
-            if (t[i].lat !== t[i + 1].lat || t[i].lon !== t[i + 1].lon) {
-              anim.heading = bearingDeg(t[i], t[i + 1]) - 90;
-              return;
-            }
-          }
-        })();
         car = L.marker([anim.track[0].lat, anim.track[0].lon], { icon: carIcon, zIndexOffset: 1000 }).addTo(map);
-        traveledLine = L.polyline([], { color: '#8a97a8', weight: 5.5, opacity: 0.95 }).addTo(map);
         addArrows();
         controls.style.display = 'flex';
         playBtn.textContent = '▶';
@@ -997,7 +1191,28 @@
           anim.lastFrame = null;
           rafId = requestAnimationFrame(frame);
         }
+        syncAnim();
       });
+      // Restart the drive from the beginning: stop, clear the revealed trail,
+      // and bring the full route overview back.
+      var resetBtn = document.getElementById('anim-reset');
+      if (resetBtn) {
+        resetBtn.addEventListener('click', function () {
+          if (!anim) return;
+          anim.playing = false;
+          playBtn.textContent = '▶';
+          if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+          anim.current = 0;
+          anim.lastFrame = null;
+          anim.lastK = -1;
+          anim.trailRuns.forEach(function (run) {
+            if (run.polyline) { map.removeLayer(run.polyline); run.polyline = null; }
+            run.drawn = 0;
+          });
+          syncAnim();
+          toast('Back to the start of the journey');
+        });
+      }
       speedSel.addEventListener('change', function () { anim.pct = parseFloat(speedSel.value); });
       slider.addEventListener('input', function () {
         anim.dragging = true;

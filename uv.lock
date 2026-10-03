@@ -594,13 +594,19 @@ name = "route-recap-generator"
 version = "0.1.0"
 source = { editable = "packages/generator" }
 dependencies = [
+    { name = "httpx" },
     { name = "jinja2" },
+    { name = "pillow" },
+    { name = "pillow-heif" },
     { name = "route-recap-core" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "pillow", specifier = ">=10" },
+    { name = "pillow-heif", specifier = ">=0.16" },
     { name = "route-recap-core", editable = "packages/core" },
 ]
 

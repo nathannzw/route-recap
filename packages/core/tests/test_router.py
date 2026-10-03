@@ -538,8 +538,11 @@ def test_reverse_geocode_nominatim_user_agent():
     assert seen["ua"] == "route-recap/0.1 (personal use)"
 
 
-def test_reverse_geocode_detail_nominatim_name_preference():
+def test_reverse_geocode_detail_nominatim_name_preference(monkeypatch):
     """House numbers must not become the stop name."""
+    # This asserts the Nominatim path, so no Google key may be present —
+    # otherwise reverse_geocode_detail legitimately prefers Google.
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params.get("addressdetails") == "1"

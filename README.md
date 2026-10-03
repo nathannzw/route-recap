@@ -10,7 +10,9 @@ travel media into an automated, continuous route map summary.
 Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
 
 1. **Extracts** GPS coordinates and capture timestamps from every file
-   (ExifTool first, Pillow + `pillow-heif` as an image fallback).
+   (ExifTool first, Pillow + `pillow-heif` as an image fallback). Both photos
+   **and videos** carry GPS on iPhone — in a sample 4,040-file trip, 1,889 of
+   1,895 videos had location data.
 2. **Filters outliers** — photo dumps usually contain noise: home, airport,
    or even foreign-country photos. Waypoints that imply flight-speed jumps
    in the timeline are split off and the largest continuous segment is kept
@@ -36,127 +38,42 @@ Feed it a folder of iPhone travel media (HEIC / JPEG / MOV / MP4) and it:
    originals. The single HTML file is **shareable and works on mobile** — a
    Share button copies the link and a Download button saves the file. Leaflet
    and the basemap tiles load from the network when you open the report.
+7. **Packs it into one file you can send** (`--single-file`) — `journey.html`
+   embeds small copies of every photo plus Leaflet itself, so it survives being
+   AirDropped, emailed or messaged. No server, no setup for the person opening
+   it. See [Sharing a trip](#-sharing-a-trip).
 
 ## 🔄 How a trip becomes a map
 
-Run the CLI once; it coordinates local media processing, optional map APIs,
-and report generation. This flowchart shows the full path, including provider
-fallbacks:
+Run the CLI once; it coordinates local media processing, optional map APIs, and
+report generation — extract → filter/dedupe/detect stops → reconstruct the road
+route → name stops → render. Every external service has a fallback, so a run
+degrades rather than fails.
 
-```mermaid
-flowchart TD
-   subgraph input["1 · Select and extract"]
-      media["Trip media folder<br/>HEIC · HEIF · JPEG · MOV · MP4"]
-      cli["CLI configuration<br/>trip name · folder · units · stop threshold"]
-      extract["MediaExtractor<br/>ExifTool; Pillow + pillow-heif image fallback"]
-      hasGps{"GPS coordinates found?"}
-      skipped["Skip from map<br/>file remains in scanned-file count"]
-      gps["GPS coordinates + capture time"]
-      media --> cli --> extract --> hasGps
-      hasGps -->|No| skipped
-      hasGps -->|Yes| gps
-   end
-
-   subgraph core["2 · Prepare the trip"]
-        filter["Filter outliers<br/>drop flight-speed timeline jumps<br/>(home / airport / foreign photos)"]
-        cluster["Sort by capture time<br/>dedupe photo bursts · detect stops"]
-        filter --> cluster
-    end
-    gps --> filter
-   subgraph routing["3 · Reconstruct the road route"]
-      googleKey{"Google Maps key configured?"}
-      snap["Roads API<br/>Snap to Roads"]
-      snapOk{"At least 2 waypoints snapped?"}
-      routes["Routes API<br/>route snapped on-road points"]
-      routeOk{"Google route succeeded?"}
-      googleRoute["Google road route<br/>polyline · distance · driving time"]
-      offroad["Unsnapped waypoints<br/>separate off-road POIs"]
-      osrm["OSRM fallback<br/>uses original waypoint coordinates"]
-      osrmRoute["OSRM route<br/>or no route line if routing fails"]
-      routeData["Available route segments + metrics"]
-
-      googleKey -->|Yes| snap --> snapOk
-      snapOk -->|Yes| routes --> routeOk
-      routeOk -->|Yes| googleRoute
-      routeOk -->|Yes| offroad
-      routeOk -->|No| osrm
-      snapOk -->|No / error| osrm
-      googleKey -->|No| osrm
-      osrm --> osrmRoute
-      googleRoute --> routeData
-      osrmRoute --> routeData
-   end
-   cluster --> googleKey
-
-   subgraph report["4 · Name stops and generate the report"]
-      geocodeChoice{"Stops found and geocoding enabled?"}
-      geocode["Google Geocoding<br/>Nominatim fallback"]
-      coordinates["Keep stop coordinates"]
-      summary["TripSummary<br/>distance · drive/stop time · media · stops"]
-      builder["Jinja2 HTML generator<br/>embeds trip data in the page"]
-      files["output/<trip>/index.html<br/>and summary.json"]
-
-      geocodeChoice -->|Yes| geocode
-      geocodeChoice -->|No| coordinates
-      geocode --> summary
-      coordinates --> summary
-      summary --> builder --> files
-   end
-   cluster --> geocodeChoice
-   routeData --> summary
-   offroad --> summary
-
-   subgraph browser["5 · View the trip"]
-      open["Open the HTML report"]
-      leaflet["Leaflet map<br/>library loaded from CDN"]
-      tileChoice{"CARTO key configured?"}
-      carto["CARTO Voyager tiles"]
-      osm["OpenStreetMap tile fallback"]
-      open --> leaflet --> tileChoice
-      tileChoice -->|Yes| carto
-      tileChoice -->|No| osm
-   end
-   files --> open
-
-   classDef local fill:#eaf2ff,stroke:#3973b9,color:#10243e
-   classDef decision fill:#fff4dc,stroke:#c78218,color:#3e2d00
-   classDef external fill:#f1eaff,stroke:#8062ad,color:#25143d
-   classDef output fill:#e8f7ee,stroke:#39875a,color:#13321f
-    class media,cli,extract,gps,filter,cluster,summary,builder local
-   class hasGps,googleKey,snapOk,routeOk,geocodeChoice,tileChoice decision
-   class snap,routes,geocode,osrm,carto,osm,leaflet external
-   class skipped,offroad,googleRoute,osrmRoute,routeData,coordinates,files,open output
-```
+**[→ Full pipeline diagram and technical guide](docs/technical-guide.md)** —
+the flowchart, plus per-stage algorithms, provider fallback rules, the data
+model, frontend internals, the single-file export, and known limitations.
 
 ### What each package does
 
 | Package | Responsibility |
 |---|---|
-| `packages/cli` | Collects trip settings, runs the pipeline, shows progress and opens the report. |
+| `packages/cli` | Collects trip settings, runs the pipeline, shows progress, serves reports. |
 | `packages/core` | Defines the data models; extracts media metadata; filters out foreign/airport outliers; deduplicates waypoints; detects stops; routes, reverse-geocodes, and tags route segments with their trip day. |
-| `packages/generator` | Turns the final trip summary into `index.html` and `summary.json` — day-colored routes, day filter legend, drive animation, and sharing; stages media hardlinks and thumbnails. |
+| `packages/generator` | Turns the final trip summary into `index.html`, `summary.json` and the shareable `journey.html` — day-colored routes, day filter legend, drive animation, single-file export; stages media hardlinks and thumbnails. |
 
-**Routing detail:** when Google routing succeeds, road-snapped waypoints form
-the road route. Consecutive waypoints Google cannot snap (roads it lacks in
-remote areas) are bridged via OSRM so the route stays continuous; only
-isolated single points become off-road POIs. If the Google key is absent or
-the Google route fails, OSRM is used for the whole route. If routing is
-unavailable, the report can still be generated without a route line.
+The short version of the routing rules, since they shape what you see on the
+map: with a Google key, road-snapped waypoints form the route and consecutive
+waypoints Google *can't* snap are bridged via OSRM so the route stays
+continuous; only isolated trip-boundary points become off-road POIs. Without a
+key, OSRM routes everything. If routing fails outright, you still get a report —
+just without a route line.
 
-**Keys and network:** `GOOGLE_MAPS_API_KEY` is used by the local pipeline and
-is not put in the HTML. `CARTO_BASEMAP_KEY` is embedded in the report because
-the browser needs it to request CARTO tiles; without it, the report uses
-OpenStreetMap tiles. Trip data is embedded, but the map library and tile images
-are remote, so opening the interactive map requires an internet connection.
+Provider selection, the API-key rules and where the boundaries are between
+local work and network calls are all spelled out in the
+[technical guide](docs/technical-guide.md#7-configuration--providers).
 
-**Scale:** the pipeline is linear and cheap — thousands of media files and
-hundreds of stops are fine. With a Google key, stops reverse-geocode in
-parallel (a few seconds for hundreds of stops); the Nominatim fallback runs
-sequentially at its ~1 request/second policy limit. Stop pins and POI markers
-are marker-clustered on the map, so the report stays readable with hundreds of
-stops.
-
-## 🌈 Day colors, animation & sharing
+## 🌈 Day colors & animation
 
 **Color-coded routes by day.** After routing, `clustering.assign_days` tags
 every `RouteSegment` with the 0-based day it belongs to (derived from its
@@ -166,41 +83,45 @@ palette (trips longer than 12 days cycle), and the legend lists one toggle per
 day so you can show or hide individual days.
 
 **Day-aware animation.** The play/speed/slider controls drive a car along the
-route. The traveled trail is grayed out behind the car while the road ahead
-stays in its day color, so the line visibly changes color as you cross into a
-new day; the label's `Day N` chip is tinted with that day's color too.
-Toggling a day off removes its segments from the animation timeline, and the
-car teleports across the hidden days instead of driving a straight line.
+route. During playback the full route is hidden and the line is **revealed in
+the car's wake**, segment by segment, in each day's color — so you only ever
+see ground you've already covered. The label's `Day N` chip is tinted with the
+current day's color. Jumping the slider ahead reveals up to that point
+instantly, and the **⟲ reset button** (or dragging back to 0) restarts the
+journey from the beginning and brings the whole overview route back. Toggling a
+day off removes its segments from the animation timeline, and the car skips
+across the hidden days instead of driving a straight line. The car itself stays
+upright on screen — direction is conveyed by the route arrows.
 
-**Share anywhere.** The report is a self-contained HTML file — no server, no
-setup, and it works offline for the data (tiles and the Leaflet library are
-the only network requests). The header has a **Share** button that copies the
-report link and a **Download** button that saves the HTML. On touch devices,
-swipe up/down on the map to change animation speed and tap the progress label
-to play/pause.
+**Steady pacing.** The drive is deliberately *not* driven by the raw photo
+timestamps. Real elapsed time made the car crawl through long overnight gaps
+and then rocket through legs whose two photos were seconds apart. Instead the
+car moves at a constant nominal speed and each stop becomes a short, capped
+pause, while the clock and `Day` label still read from the true trip timeline.
 
-```
-route-recap/
-├── packages/
-│   ├── core/                  # route_recap.core — EXIF extraction, clustering, routing
-│   │   ├── src/route_recap/core/
-│   │   │   ├── extractor.py   # GPS & timestamps from HEIC/JPEG/MOV/MP4
-│   │   │   ├── clustering.py  # burst dedup, stop detection, haversine
-│   │   │   ├── router.py      # Google Routes/Snap-to-Roads + OSRM fallback, geocoding
-│   │   │   └── models.py      # Pydantic schemas (MediaMetadata, Waypoint, Stop, …)
-│   │   └── tests/
-│   ├── generator/             # route_recap.generator — static HTML report
-│   │   └── src/route_recap/generator/
-│   │       ├── html_builder.py
-│   │       └── templates/map.html.j2
-│   └── cli/                   # route_recap.cli — interactive Typer/rich runner
-│       └── src/route_recap/cli/main.py
-├── data/                      # drop your trip media here (git-ignored)
-├── output/                    # generated reports (git-ignored)
-├── docs/                      # setup guides
-├── pyproject.toml             # uv workspace root
-└── requirements.txt           # pip-installable snapshot (generated by uv export)
-```
+**Icons, not dots.** Waypoints are drawn as 📷 markers and off-road POIs as a
+larger, glowing 🏔️, so the map reads at a glance; stops keep their numbered
+pins and show a `Stop N` tooltip on hover. Direction arrows are spaced at an
+even distance interval along the whole route (roughly one per 60 km on a
+country-scale trip), each tinted with its day's color.
+
+About **off-road spots**: they are genuinely rare by design. Only waypoints
+that Snap-to-Roads cannot place *and* that sit at the trip's boundary stay
+off-road — interior ones are bridged via OSRM so the route stays continuous. On
+a real 748-waypoint trip that is typically a handful of points (e.g. arrival
+photos at the airport), so they are easy to miss among thousands of 📷 pins and
+often collapse into a single cluster bubble at low zoom.
+
+**Light & dark.** A header toggle switches the report between light and dark
+(themes respect `prefers-color-scheme` on first load and the choice is
+remembered). Dark mode loads CARTO's `dark_all` basemap when a CARTO key is
+configured, and inverts the OpenStreetMap tiles as a fallback when it isn't.
+
+**Share anywhere.** The header has a **Share** button (native share sheet on
+iOS, clipboard elsewhere) and a **Download** button. On touch devices, swipe
+up/down on the map to change animation speed and tap the progress label to
+play/pause. To send the trip to someone who isn't on your network, use
+[`--single-file`](#-sharing-a-trip).
 
 ## 🚀 Setup
 
@@ -237,6 +158,9 @@ uv run route-recap --no-filter-outliers
 # Skip media staging/thumbnails
 uv run route-recap --no-media
 
+# Also write journey.html — one self-contained file you can send to anyone
+uv run route-recap --single-file
+
 # See all options
 uv run route-recap --help
 ```
@@ -255,6 +179,73 @@ uv run route-recap serve --port 9000 --no-open
 
 The trip data is embedded, while Leaflet, map tiles, and photo strips are
 fetched through the local server.
+
+## 📤 Sharing a trip
+
+The simplest way to show someone else your trip needs **no server at all**:
+
+```powershell
+uv run route-recap --single-file
+```
+
+This writes `output/<trip>/journey.html` — one file, typically 10–20 MB for a
+couple of thousand photos. Send it however you like (AirDrop, iMessage, email,
+WhatsApp, a USB stick) and the recipient just opens it. What's inside:
+
+| Embedded | Not embedded |
+|---|---|
+| All trip data (route, stops, days, animation) | Full-resolution originals (they'd be gigabytes) |
+| Leaflet + markercluster, so no CDN is needed | Videos (too large) |
+| A small (~200 px) copy of every photo, so popups work offline | The basemap tiles (see below) |
+
+Useful flags:
+
+```powershell
+uv run route-recap --single-file --max-embed-mb 8    # smaller file
+uv run route-recap --single-file --no-embed-photos   # ~1 MB, map only
+uv run route-recap --single-file --no-inline-libraries   # keep the CDN links
+```
+
+**Photos:** embedded copies are low-resolution previews, meant for the popup
+strips — tapping one opens that same preview, not the original. The
+full-resolution photos still live in `output/<trip>/media/` and are only
+viewable through `uv run route-recap serve` on your own machine.
+
+**Basemap:** tiles are the one thing that can't be inlined cheaply, so the map
+needs internet to show the actual terrain. Without it the report still fully
+works — route, day colors, arrows, stops, photos, animation — just drawn on a
+blank background. Everything except the tiles is offline.
+
+### 📱 Opening it on an iPhone / iPad
+
+Send the file to the phone, then **tap it** and choose **Safari** (in the iOS
+Files app, tap the file, then the share icon → *Open in Safari*). Safari can
+open a local `.html` file directly, so nothing needs to be hosted.
+
+> A quick note: a `.html` attachment is slightly awkward on iOS compared to a
+> link — some apps preview it instead of opening it. If that bothers you, see
+> the alternatives below, which trade a little setup for a nicer experience.
+
+### Alternatives
+
+| Approach | Command | When to use it |
+|---|---|---|
+| **Single file** | `uv run route-recap --single-file` | Default. Works anywhere, no setup. |
+| **LAN server** | `uv run route-recap serve --host 0.0.0.0` | Same Wi-Fi as your PC; photos at full size. |
+| **HTTPS tunnel** | `route-recap serve --host 0.0.0.0` + `cloudflared tunnel --url http://localhost:8000` | A **secure context**, so the Share button uses the iOS share sheet. Works off-LAN. |
+| **Static host** | Upload `output/<trip>/` to GitHub Pages / Netlify / Cloudflare Pages | Best for sending a *link* people just tap; include `media/` and `thumbs/`. |
+
+```powershell
+# LAN: serve on all interfaces (not just this PC's loopback)
+uv run route-recap serve --host 0.0.0.0
+# It prints something like:
+#   On your phone (same Wi-Fi): http://192.168.1.107:8000/
+```
+
+If the phone times out on the LAN option, allow Python through the firewall on
+**Private** networks — and note that Windows firewalls match on the *exact*
+interpreter path, so a rule for another Python install won't cover the
+project's `.venv\Scripts\python.exe`.
 
 ## ⚙️ Configuration (`.env`)
 
