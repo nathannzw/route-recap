@@ -208,6 +208,49 @@
       border-radius: 6px;
       text-decoration: none;
     }
+    /* Photos open in an in-page lightbox rather than a new tab. */
+    .photo-strip button.photo-open {
+      display: block; padding: 0; border: none; background: none;
+      cursor: zoom-in; line-height: 0;
+    }
+    .photo-strip button.photo-more {
+      width: 56px; height: 56px; border-radius: 6px;
+      background: rgba(16, 36, 62, 0.78); color: #fff;
+      font-weight: 700; font-size: 0.78rem; cursor: pointer;
+    }
+    .photo-strip button.photo-more:hover { background: var(--brand-deep); }
+    /* lightbox */
+    .lightbox {
+      position: fixed; inset: 0; z-index: 3000;
+      background: rgba(6, 12, 20, 0.9);
+      display: flex; align-items: center; justify-content: center;
+      padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+               calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    }
+    .lightbox[hidden] { display: none; }
+    .lightbox img {
+      max-width: 100%; max-height: 100%;
+      object-fit: contain; border-radius: 8px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.35);
+    }
+    .lightbox button {
+      position: absolute; border: none; cursor: pointer;
+      background: rgba(255, 255, 255, 0.16); color: #fff;
+      width: 44px; height: 44px; border-radius: 50%;
+      font-size: 1.35rem; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .lightbox button:hover { background: rgba(255, 255, 255, 0.32); }
+    .lightbox button[hidden] { display: none; }
+    .lightbox-close { top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); }
+    .lightbox-prev { left: 12px; top: 50%; transform: translateY(-50%); }
+    .lightbox-next { right: 12px; top: 50%; transform: translateY(-50%); }
+    .lightbox-count {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      bottom: calc(14px + env(safe-area-inset-bottom));
+      color: rgba(255, 255, 255, 0.85); font-size: 0.78rem;
+    }
     /* legend */
     .legend {
       position: absolute;
@@ -471,25 +514,133 @@
         return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
       var assets = data.assets || {};
+      // ---- photo strips + lightbox ----
+      // Every strip registers its full photo list here, keyed by an id, so the
+      // lightbox can page through *all* of a location's photos even though the
+      // popup only shows the first few thumbnails.
+      var photoStrips = [];
       function assetStrip(files, limit) {
-        var html = '';
-        var shown = 0;
+        var images = [], videos = [];
         (files || []).forEach(function (f) {
-          if (limit && shown >= limit) return;
           var a = assets[f];
           if (!a) return;
-          if (a.thumb) {
-            // Single-file reports embed the photo in ``thumb`` and leave
-            // ``url`` empty, so fall back to it rather than emitting an empty href.
-            var href = a.url || a.thumb;
-            html += '<a href="' + esc(href) + '" target="_blank"><img src="' + esc(a.thumb) + '" loading="lazy" alt=""></a>';
-          } else if (a.kind === 'video') {
-            html += '<a class="vid" href="' + esc(a.url) + '" target="_blank" title="' + esc(f) + '">▶</a>';
-          }
-          shown++;
+          if (a.kind === 'video' && !a.thumb) videos.push({ asset: a, file: f });
+          else if (a.thumb || a.url) images.push(a);
         });
-        return html ? '<div class="photo-strip">' + html + '</div>' : '';
+        if (!images.length && !videos.length) return '';
+
+        var id = photoStrips.length;
+        photoStrips.push(images);
+        var shown = limit ? images.slice(0, limit) : images;
+        var html = '';
+        shown.forEach(function (a, i) {
+          html += '<button type="button" class="photo-open" data-s="' + id + '" data-i="' + i + '"'
+            + ' title="Open photo"><img src="' + esc(a.thumb || a.url) + '" loading="lazy" alt=""></button>';
+        });
+        var hidden = images.length - shown.length;
+        if (hidden > 0) {
+          html += '<button type="button" class="photo-open photo-more" data-s="' + id + '"'
+            + ' data-i="' + shown.length + '" title="Show all ' + images.length + ' photos">'
+            + '+' + hidden + '</button>';
+        }
+        videos.forEach(function (v) {
+          html += '<a class="vid" href="' + esc(v.asset.url) + '" target="_blank" title="'
+            + esc(v.file) + '">▶</a>';
+        });
+        return '<div class="photo-strip">' + html + '</div>';
       }
+
+      var lbEl = null, lbImg = null, lbCount = null;
+      var lbStrip = 0, lbIndex = 0, lbAsset = null;
+
+      function lightboxEl() {
+        if (lbEl) return lbEl;
+        lbEl = document.createElement('div');
+        lbEl.className = 'lightbox';
+        lbEl.hidden = true;
+        lbEl.innerHTML =
+          '<button type="button" class="lightbox-close" aria-label="Close">×</button>'
+          + '<button type="button" class="lightbox-prev" aria-label="Previous photo">‹</button>'
+          + '<img alt="">'
+          + '<button type="button" class="lightbox-next" aria-label="Next photo">›</button>'
+          + '<div class="lightbox-count"></div>';
+        document.body.appendChild(lbEl);
+        lbImg = lbEl.querySelector('img');
+        lbCount = lbEl.querySelector('.lightbox-count');
+        // Full-resolution originals only exist in folder reports; in a
+        // single-file report ``url`` is empty and we show the embedded copy.
+        lbImg.addEventListener('error', function () {
+          if (lbAsset && lbAsset.thumb && lbImg.src !== lbAsset.thumb) lbImg.src = lbAsset.thumb;
+        });
+        lbEl.querySelector('.lightbox-close').addEventListener('click', closeLightbox);
+        lbEl.querySelector('.lightbox-prev').addEventListener('click', function (e) {
+          e.stopPropagation(); stepPhoto(-1);
+        });
+        lbEl.querySelector('.lightbox-next').addEventListener('click', function (e) {
+          e.stopPropagation(); stepPhoto(1);
+        });
+        lbEl.addEventListener('click', function (e) { if (e.target === lbEl) closeLightbox(); });
+        document.addEventListener('keydown', function (e) {
+          if (!lbEl || lbEl.hidden) return;
+          if (e.key === 'Escape') closeLightbox();
+          else if (e.key === 'ArrowLeft') stepPhoto(-1);
+          else if (e.key === 'ArrowRight') stepPhoto(1);
+        });
+        var swipeFrom = null;
+        lbEl.addEventListener('touchstart', function (e) {
+          swipeFrom = e.touches.length === 1 ? e.touches[0].clientX : null;
+        }, { passive: true });
+        lbEl.addEventListener('touchend', function (e) {
+          if (swipeFrom === null) return;
+          var dx = e.changedTouches[0].clientX - swipeFrom;
+          swipeFrom = null;
+          if (Math.abs(dx) > 45) stepPhoto(dx < 0 ? 1 : -1);
+        }, { passive: true });
+        return lbEl;
+      }
+
+      function showLightboxPhoto() {
+        var list = photoStrips[lbStrip] || [];
+        var a = list[lbIndex];
+        if (!a) return;
+        lbAsset = a;
+        lbImg.src = a.url || a.thumb;
+        lbCount.textContent = (lbIndex + 1) + ' / ' + list.length;
+        var many = list.length > 1;
+        lbEl.querySelector('.lightbox-prev').hidden = !many;
+        lbEl.querySelector('.lightbox-next').hidden = !many;
+      }
+      function openLightbox(strip, index) {
+        lightboxEl();
+        lbStrip = strip;
+        lbIndex = index;
+        showLightboxPhoto();
+        lbEl.hidden = false;
+        document.body.style.overflow = 'hidden';
+      }
+      function closeLightbox() {
+        if (!lbEl) return;
+        lbEl.hidden = true;
+        lbImg.removeAttribute('src');  // release full-res images promptly
+        document.body.style.overflow = '';
+      }
+      function stepPhoto(delta) {
+        var list = photoStrips[lbStrip] || [];
+        if (list.length < 2) return;
+        lbIndex = (lbIndex + delta + list.length) % list.length;
+        showLightboxPhoto();
+      }
+      // Delegated so it also works for popups created later by Leaflet.
+      document.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('.photo-open') : null;
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();  // keep the Leaflet popup open
+        openLightbox(
+          parseInt(btn.getAttribute('data-s'), 10),
+          parseInt(btn.getAttribute('data-i'), 10)
+        );
+      });
 
       var map = L.map('map', { scrollWheelZoom: true }).setView([20, 0], 2);
 

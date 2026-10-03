@@ -345,6 +345,8 @@ def _export_single_file(
     embed_photos: bool,
     max_embed_mb: float,
     inline_libraries: bool,
+    photo_size: int,
+    photo_quality: int,
 ) -> tuple[Path, list[str]]:
     """Write the shareable ``journey.html``.
 
@@ -359,6 +361,8 @@ def _export_single_file(
         assets=assets,
         embed=embed_photos,
         max_embed_mb=max_embed_mb,
+        thumb_size=photo_size,
+        thumb_quality=photo_quality,
         inline_libraries=inline_libraries,
     )
 
@@ -433,6 +437,21 @@ def main(
             help="Inline Leaflet in journey.html so it needs no CDN.",
         ),
     ] = True,
+    photo_size: Annotated[
+        int,
+        typer.Option(
+            "--photo-size",
+            help="Longest edge, in px, of each photo embedded in journey.html "
+            "(bigger = sharper in the lightbox, larger file).",
+        ),
+    ] = 200,
+    photo_quality: Annotated[
+        int,
+        typer.Option(
+            "--photo-quality",
+            help="JPEG quality (1-95) for embedded photos.",
+        ),
+    ] = 70,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Verbose logging")
     ] = False,
@@ -510,6 +529,8 @@ def main(
                 embed_photos=embed_photos,
                 max_embed_mb=max_embed_mb,
                 inline_libraries=inline_libraries,
+                photo_size=photo_size,
+                photo_quality=photo_quality,
             )
         for warning in warnings:
             console.print(f"[yellow]{warning}[/yellow]")

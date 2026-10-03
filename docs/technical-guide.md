@@ -399,7 +399,33 @@ persisted in `localStorage['route-recap-theme']`, defaults to
 JS: CARTO `dark_all` when a CARTO key is configured, otherwise OSM tiles with a
 CSS `invert(1) hue-rotate(180deg)` filter to approximate a dark map.
 
-### 5.5 Mobile and sharing
+### 5.5 Photos and the lightbox
+
+Popups render a `photo-strip` of thumbnails, limited to 6 (stops), 4 (off-road)
+or 3 (waypoints) so a popup stays a reasonable size. Thumbnails are `<button>`s,
+not links — clicking one opens an **in-page lightbox**, so the report never
+navigates away.
+
+- `assetStrip(files, limit)` registers each strip's **complete** photo list in
+  the module-level `photoStrips` array and returns the first `limit` of them.
+  When photos remain it appends a **`+N`** button whose index points at the
+  first hidden photo, so the lightbox can page through the rest.
+- Click handling is delegated on `document` (popups are created by Leaflet long
+  after the handlers are registered) and calls `stopPropagation` so the popup
+  stays open.
+- The lightbox is built lazily on first use: close via the × button, the
+  backdrop, or Esc; navigate via the arrow buttons, ← / →, or a horizontal
+  swipe. `document.body.style.overflow` is locked while it is open, and the
+  `src` is cleared on close so full-resolution images are released promptly.
+- **Source selection:** `a.url || a.thumb`, with an `onerror` fallback back to
+  `thumb`. In the folder report `url` is `media/…`, so the lightbox shows the
+  **full-resolution original** (4,284×5,712 on the reference trip) while strips
+  stay at 240×320. In a single-file report `url` is empty and it falls back to
+  the embedded preview.
+- Videos keep an external `▶` link — a video file cannot be embedded, so there
+  is nothing to show in the lightbox.
+
+### 5.6 Mobile and sharing
 
 - Swipe up/down on the map changes animation speed; tapping the progress label
   toggles play/pause (both with a toast).
@@ -447,6 +473,10 @@ would be worse than none, so the code only inlines when *every* file arrived.
   photos takes seconds, not minutes.
 - **Videos are dropped entirely** rather than embedded — they are far too large,
   and a video with no preview would otherwise render a link to a missing file.
+- **Resolution is a knob.** `--photo-size` (200 px default) and
+  `--photo-quality` (70) trade sharpness in the lightbox against file size,
+  since every photo is being embedded. Measured on the reference trip: 200 px →
+  **16.3 MB**, ~400 px → **~60 MB**.
 - **`url` is deliberately left empty** and the template falls back to `thumb` as
   the anchor's `href`. Pointing both at the same data URI duplicated every
   payload and doubled the output (31.7 MB → 16.3 MB on the reference trip).
@@ -569,9 +599,10 @@ waypoints; 50 stops; 107 route segments):
   tiles are fetched at view time, so a cold offline load shows the route on a
   blank background. Inlining a tile pyramid is not implemented.
 - **Embedded photos are previews.** Single-file mode stores ~200 px copies, so
-  tapping a photo opens that preview rather than the full-resolution original,
-  and videos are omitted entirely. Full-size media stays a folder + `serve`
-  affair.
+  the lightbox shows that preview rather than the full-resolution original, and
+  videos are omitted entirely. Raise `--photo-size` for sharper photos at the
+  cost of file size, or use the folder report (which the lightbox serves at full
+  resolution) for the originals.
 - **Matching Apple's activity data is out of scope.** The route is inferred
   from photo GPS + road snapping, so it reflects *where you took photos*, not a
   continuous GPS trace.

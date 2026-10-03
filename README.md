@@ -196,20 +196,30 @@ WhatsApp, a USB stick) and the recipient just opens it. What's inside:
 |---|---|
 | All trip data (route, stops, days, animation) | Full-resolution originals (they'd be gigabytes) |
 | Leaflet + markercluster, so no CDN is needed | Videos (too large) |
-| A small (~200 px) copy of every photo, so popups work offline | The basemap tiles (see below) |
+| A small copy of every photo, so the lightbox works offline | The basemap tiles (see below) |
 
 Useful flags:
 
 ```powershell
 uv run route-recap --single-file --max-embed-mb 8    # smaller file
 uv run route-recap --single-file --no-embed-photos   # ~1 MB, map only
+uv run route-recap --single-file --photo-size 400    # sharper in the lightbox, bigger file
 uv run route-recap --single-file --no-inline-libraries   # keep the CDN links
 ```
 
-**Photos:** embedded copies are low-resolution previews, meant for the popup
-strips — tapping one opens that same preview, not the original. The
-full-resolution photos still live in `output/<trip>/media/` and are only
-viewable through `uv run route-recap serve` on your own machine.
+`--photo-size` (default 200 px) and `--photo-quality` (default 70) trade file
+size for sharpness, since 2,000+ photos are being embedded. On the reference
+trip: **200 px → 16 MB**, roughly **400 px → 60 MB**.
+
+**Photos:** click any thumbnail and the photo opens **in the page** — no new
+tab. From there swipe (or use ← / →, or the arrows) to browse every photo at
+that place, and press Esc or tap the backdrop to close. A popup only shows the
+first handful of thumbnails, so when a place has more you'll get a **`+N`**
+tile: click it to jump into the full set. Nothing is hidden.
+
+In the **folder** report the lightbox shows the **full-resolution** original
+(`media/`), so you can zoom into a photo properly. In a **single-file** report
+there are no originals, so it shows the embedded preview instead.
 
 **Basemap:** tiles are the one thing that can't be inlined cheaply, so the map
 needs internet to show the actual terrain. Without it the report still fully

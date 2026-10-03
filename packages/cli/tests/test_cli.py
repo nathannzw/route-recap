@@ -41,6 +41,8 @@ def test_export_single_file_forwards_options(tmp_path):
         embed_photos=False,
         max_embed_mb=1.0,
         inline_libraries=False,  # avoids any network access in tests
+        photo_size=120,
+        photo_quality=60,
     )
 
     assert path == tmp_path / "out" / "journey.html"

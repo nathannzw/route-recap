@@ -125,6 +125,33 @@ def test_build_html_has_reset_arrow_spacing_and_legend_clarity(tmp_path):
     assert "Cluster" in html
 
 
+def test_build_html_photos_open_in_a_lightbox(tmp_path):
+    """Photos must open in-page, not in a new tab, and the lightbox must be
+    able to page through every photo at a location."""
+    summary = _summary(day_indexes=[0])
+    html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
+
+    # The lightbox lives in the page.
+    assert "lightbox" in html
+    assert "openLightbox" in html
+    assert "closeLightbox" in html
+    assert "stepPhoto" in html
+
+    # Photos open in-page. Videos deliberately keep an external link, since a
+    # video file can't be embedded in the report.
+    strip_src = html.split("function assetStrip")[1].split("var lbEl")[0]
+    assert 'class="photo-open"' in strip_src
+    assert '<a class="vid"' in strip_src
+    assert '<a href="' not in strip_src  # images are buttons, never navigation
+
+    # A location with more photos than the strip limit gets a "+N" opener, and
+    # the full list is registered so the lightbox can show the rest.
+    assert "photoStrips.push(images)" in html
+    assert "photo-more" in html
+    # Keyboard and swipe navigation.
+    assert "ArrowLeft" in html and "ArrowRight" in html
+
+
 def test_build_html_supports_ios_safari(tmp_path):
     summary = _summary(day_indexes=[0])
     html = build_html(summary, tmp_path / "trip").read_text(encoding="utf-8")
